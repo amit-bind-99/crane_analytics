@@ -1,25 +1,32 @@
-from flask import Flask, render_template, jsonify, request, send_file
+from flask import Flask, render_template, jsonify, request, send_file, redirect, url_for, session, flash
+from flask_bcrypt import Bcrypt
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.metrics import r2_score
 from werkzeug.utils import secure_filename
+from functools import wraps
+import sqlite3
 import warnings
 import os
 import re
 import io
+import shutil
 from datetime import datetime, timedelta
 import json
 
 warnings.filterwarnings('ignore')
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('SECRET_KEY', 'yz-bay-crane-analytics-secret-key-change-in-production')
+bcrypt = Bcrypt(app)
 
 DATA_DIR = 'data'
 DATA_PATH = os.path.join(DATA_DIR, 'LT Wheel replacement data.xlsx')
 SAMPLE_FILENAME = 'LT Wheel replacement data.xlsx'
 ALLOWED_EXTENSIONS = {'xlsx', 'xls'}
+DB_PATH = os.path.join(DATA_DIR, 'crane_analytics.db')
 
 # ============== CONFIGURATION ==============
 
@@ -27,6 +34,110 @@ REQUIRED_WHEEL_COLUMNS = {'Date', 'Crane', 'Equipment', 'Remarks'}
 OPTIONAL_WHEEL_COLUMNS = {'S.no.', 'Job Description', 'Position'}
 VALID_POSITIONS = {'SW', 'SE', 'NE', 'NW'}
 VALID_CRANE_KEYWORDS = ['west', 'east']
+
+# ============== DATABASE ==============
+
+def get_db_connection():
+    """Get a SQLite database connection with row factory."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    """Initialize the database schema."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS excel_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
+            stored_filename TEXT NOT NULL,
+            version_number INTEGER NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            total_wheel_records INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+        )
+    ''')
+
+    # Create default admin user if none exists
+    cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+    if cursor.fetchone()[0] == 0:
+        admin_hash = bcrypt.generate_password_hash('admin123').decode('utf-8')
+        cursor.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            ('admin', admin_hash, 'admin')
+        )
+
+    conn.commit()
+    conn.close()
+
+def ensure_db():
+    """Ensure DB schema exists; useful when the DB file may have been recreated."""
+    try:
+        conn = get_db_connection()
+        conn.execute("SELECT 1 FROM users LIMIT 1")
+        conn.close()
+    except sqlite3.OperationalError:
+        init_db()
+
+init_db()
+
+# ============== AUTH HELPERS ==============
+
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            if request.path.startswith('/api/'):
+                return jsonify({'success': False, 'error': 'Authentication required'}), 401
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def admin_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            if request.path.startswith('/api/'):
+                return jsonify({'success': False, 'error': 'Authentication required'}), 401
+            return redirect(url_for('login'))
+        if session.get('role') != 'admin':
+            if request.path.startswith('/api/'):
+                return jsonify({'success': False, 'error': 'Admin access required'}), 403
+            flash('Admin access required', 'error')
+            return redirect(url_for('index'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+def get_current_user():
+    """Get current user from session as dict, or None."""
+    if 'user_id' not in session:
+        return None
+    conn = get_db_connection()
+    user = conn.execute(
+        "SELECT id, username, role, is_active FROM users WHERE id = ?",
+        (session['user_id'],)
+    ).fetchone()
+    conn.close()
+    if user is None or not user['is_active']:
+        session.clear()
+        return None
+    return dict(user)
 
 # ============== MOCK DATA GENERATORS ==============
 
@@ -148,9 +259,17 @@ def generate_mock_rail_replacement_data():
 # ============== HELPERS ==============
 
 def safe_float(value):
-    if pd.isna(value):
+    if value is None:
         return None
-    return float(value)
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
 
 def get_risk_class(hb):
     if hb is None:
@@ -187,6 +306,10 @@ def extract_position(row):
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def get_version_storage_path(version_id):
+    """Return storage path for a specific Excel version."""
+    return os.path.join(DATA_DIR, f'version_{version_id}.xlsx')
+
 # ============== RAIL REPLACEMENT PARSERS ==============
 
 def extract_rail_qty(job_description):
@@ -194,7 +317,6 @@ def extract_rail_qty(job_description):
     if pd.isna(job_description):
         return 0
     text = str(job_description)
-    # Look for patterns like '6 nos.', '4 nos.', '2 no.'
     match = re.search(r'(\d+)\s*no\.?', text, re.IGNORECASE)
     if match:
         return int(match.group(1))
@@ -229,10 +351,12 @@ def parse_rail_replacement_dataframe(df_raw):
     """
     Normalize rail replacement dataframe to internal format:
     Date, Section, Side, Qty_Pieces, Reason
-    Supports both old format (Date, Section, Side, Qty_Pieces, Reason)
-    and new format (S.no., Date, Crane, Notification no., Equipment, Job Description, Remarks).
+    Supports both old format and new format.
     """
     df = df_raw.copy()
+
+    # Strip leading/trailing whitespace from column names
+    df.columns = [str(c).strip() for c in df.columns]
 
     # Old format detection
     old_cols = {'Date', 'Section', 'Side', 'Qty_Pieces', 'Reason'}
@@ -248,8 +372,6 @@ def parse_rail_replacement_dataframe(df_raw):
     df['Qty_Pieces'] = df.apply(lambda r: extract_rail_qty(r.get('Job Description')), axis=1)
     df['Section'] = df.apply(lambda r: extract_rail_section(r.get('Job Description')), axis=1)
     df['Reason'] = df.apply(lambda r: extract_rail_reason(r.get('Equipment'), r.get('Job Description')), axis=1)
-
-    # Side is not explicitly provided in the new format; default to Both
     df['Side'] = 'Both'
 
     return df[['Date', 'Section', 'Side', 'Qty_Pieces', 'Reason']]
@@ -257,10 +379,7 @@ def parse_rail_replacement_dataframe(df_raw):
 # ============== VALIDATION ==============
 
 def validate_wheel_dataframe(df, source_name='uploaded file'):
-    """
-    Lenient validation: only fail if the sheet is completely empty.
-    Everything else becomes a warning.
-    """
+    """Lenient validation: only fail if the sheet is completely empty."""
     errors = []
     warnings_list = []
     stats = {}
@@ -269,21 +388,17 @@ def validate_wheel_dataframe(df, source_name='uploaded file'):
         errors.append(f"{source_name} contains no data rows.")
         return {'valid': False, 'errors': errors, 'warnings': warnings_list, 'stats': stats}
 
-    # Drop fully empty rows silently
     df = df.dropna(how='all')
     stats['total_rows'] = len(df)
-
     columns = set(df.columns)
 
-    # Warn (not error) about missing columns
     missing_required = REQUIRED_WHEEL_COLUMNS - columns
     if missing_required:
         warnings_list.append(f"Missing columns (will use defaults): {', '.join(sorted(missing_required))}.")
 
-    # Date column
     if 'Date' in columns:
         df['Date_parsed'] = pd.to_datetime(df['Date'], errors='coerce', dayfirst=True)
-        invalid_dates = df['Date_parsed'].isna().sum()
+        invalid_dates = int(df['Date_parsed'].isna().sum())
         if invalid_dates > 0:
             warnings_list.append(f"{invalid_dates} row(s) have invalid or missing dates (will be skipped in charts).")
         valid_dates = df['Date_parsed'].dropna()
@@ -293,54 +408,42 @@ def validate_wheel_dataframe(df, source_name='uploaded file'):
                 'max': valid_dates.max().strftime('%Y-%m-%d')
             }
 
-    # Crane column
     if 'Crane' in columns:
         unique_cranes = df['Crane'].dropna().astype(str).apply(normalize_crane).unique().tolist()
         stats['cranes'] = unique_cranes
 
-    # Position extraction (informational only)
     if 'Equipment' in columns or 'Job Description' in columns:
         df['Position_extracted'] = df.apply(extract_position, axis=1)
         stats['positions'] = df['Position_extracted'].value_counts().to_dict()
 
-    return {'valid': True, 'errors': errors, 'warnings': warnings_list, 'stats': stats}
+    return {'valid': True, 'errors': [], 'warnings': warnings_list, 'stats': stats}
 
 def validate_rail_replacement_dataframe(df, source_name='Rail Replacement data'):
     """Lenient validation: accept whatever columns are present."""
-    warnings_list = []
-    stats = {}
-
     if df is None or df.empty:
-        warnings_list.append(f"{source_name} sheet is empty.")
-        return {'valid': True, 'errors': [], 'warnings': warnings_list, 'stats': stats}
-
+        return {'valid': True, 'errors': [], 'warnings': [f"{source_name} sheet is empty."], 'stats': {}}
     df = df.dropna(how='all')
-    stats['total_rows'] = len(df)
-
-    return {'valid': True, 'errors': [], 'warnings': warnings_list, 'stats': stats}
+    return {'valid': True, 'errors': [], 'warnings': [], 'stats': {'total_rows': len(df)}}
 def validate_hardness_dataframe(df, source_name='Rail Hardness data'):
-    """Lenient validation: scan flexibly for numeric hardness values regardless of layout."""
-    warnings_list = []
-    stats = {}
-
+    """Lenient validation: correct row indices, NaN-safe stats."""
     if df is None or df.empty:
-        warnings_list.append(f"{source_name} sheet is empty.")
-        return {'valid': True, 'errors': [], 'warnings': warnings_list, 'stats': stats}
+        return {'valid': True, 'errors': [], 'warnings': [f"{source_name} sheet is empty."], 'stats': {}}
 
+    stats = {}
     try:
-        # Actual layout: row 0 = empty, row 1 = section labels, row 2 = north, row 3 = south
+        # Layout: row 0 = empty, row 1 = section labels, row 2 = north, row 3 = south
         sections = df.iloc[1, 2:14].astype(str).tolist()
         north = pd.to_numeric(df.iloc[2, 2:14], errors='coerce')
         south = pd.to_numeric(df.iloc[3, 2:14], errors='coerce')
         stats['sections'] = len(sections)
         north_mean = north.dropna().mean()
         south_mean = south.dropna().mean()
-        stats['north_avg'] = round(float(north_mean), 1) if not pd.isna(north_mean) else None
-        stats['south_avg'] = round(float(south_mean), 1) if not pd.isna(south_mean) else None
+        stats['north_avg'] = round(float(north_mean), 1) if pd.notna(north_mean) else None
+        stats['south_avg'] = round(float(south_mean), 1) if pd.notna(south_mean) else None
     except Exception:
         stats['sections'] = 0
 
-    return {'valid': True, 'errors': [], 'warnings': warnings_list, 'stats': stats}
+    return {'valid': True, 'errors': [], 'warnings': [], 'stats': stats}
 
 # ============== SAMPLE EXCEL GENERATOR ==============
 
@@ -501,71 +604,72 @@ def parse_wheel_dataframe(df_raw):
     """
     df = df_raw.copy()
 
-    # Rename S.no. to a standard name if present
     if 'S.no.' in df.columns:
         df = df.rename(columns={'S.no.': 'S_No'})
 
-    # Ensure required columns exist
     for col in ['Date', 'Crane', 'Equipment', 'Remarks']:
         if col not in df.columns:
             df[col] = None
 
-    # Parse dates
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce', dayfirst=True)
-
-    # Normalize crane names
     df['Crane'] = df['Crane'].apply(normalize_crane)
 
-    # Extract position
     if 'Position' in df.columns:
         df['Position'] = df['Position'].fillna(df.apply(extract_position, axis=1))
     else:
         df['Position'] = df.apply(extract_position, axis=1)
 
-    # Clean up Position to valid values
     df['Position'] = df['Position'].apply(
         lambda x: x if x in VALID_POSITIONS else 'Other'
     )
 
-    # Ensure remarks are strings
     df['Remarks'] = df['Remarks'].fillna('').astype(str)
 
     return df
+
+def load_data_from_path(file_path):
+    """Load data from a specific Excel file path."""
+    if not os.path.exists(file_path):
+        return None, None, None
+
+    xls = pd.ExcelFile(file_path)
+    sheets = xls.sheet_names
+
+    # Wheel replacement
+    if 'LT wheel replacement data' in sheets:
+        df_wheels_raw = pd.read_excel(file_path, sheet_name='LT wheel replacement data')
+        df_wheels = parse_wheel_dataframe(df_wheels_raw)
+    else:
+        df_wheels = parse_wheel_dataframe(generate_mock_wheel_data())
+
+    # Hardness data
+    if 'Rail Hardness data' in sheets:
+        df_hardness_raw = pd.read_excel(file_path, sheet_name='Rail Hardness data', header=None)
+        try:
+            # Layout: row 0 = empty, row 1 = section labels, row 2 = north HB, row 3 = south HB
+            sections = df_hardness_raw.iloc[1, 2:14].astype(str).tolist()
+            north = pd.to_numeric(df_hardness_raw.iloc[2, 2:14], errors='coerce').values
+            south = pd.to_numeric(df_hardness_raw.iloc[3, 2:14], errors='coerce').values
+            df_hardness = pd.DataFrame({'Section': sections, 'North': north, 'South': south})
+        except Exception:
+            df_hardness = generate_mock_hardness_data()
+    else:
+        df_hardness = generate_mock_hardness_data()
+
+    # Rail replacement
+    if 'Rail Replacement data' in sheets:
+        df_rail_raw = pd.read_excel(file_path, sheet_name='Rail Replacement data')
+        df_rail = parse_rail_replacement_dataframe(df_rail_raw)
+    else:
+        df_rail = parse_rail_replacement_dataframe(generate_mock_rail_replacement_data())
+
+    return df_wheels, df_hardness, df_rail
 
 def load_data():
     """Try loading Excel; fall back to mock data if missing or corrupt."""
     if os.path.exists(DATA_PATH):
         try:
-            xls = pd.ExcelFile(DATA_PATH)
-            sheets = xls.sheet_names
-
-            # Wheel replacement
-            if 'LT wheel replacement data' in sheets:
-                df_wheels_raw = pd.read_excel(DATA_PATH, sheet_name='LT wheel replacement data')
-                df_wheels = parse_wheel_dataframe(df_wheels_raw)
-            else:
-                df_wheels = parse_wheel_dataframe(generate_mock_wheel_data())
-
-            # Hardness data
-            if 'Rail Hardness data' in sheets:
-                df_hardness_raw = pd.read_excel(DATA_PATH, sheet_name='Rail Hardness data', header=None)
-                try:
-                    sections = df_hardness_raw.iloc[1, 2:14].astype(str).tolist()
-                    north = pd.to_numeric(df_hardness_raw.iloc[2, 2:14], errors='coerce').values
-                    south = pd.to_numeric(df_hardness_raw.iloc[3, 2:14], errors='coerce').values
-                    df_hardness = pd.DataFrame({'Section': sections, 'North': north, 'South': south})
-                except Exception:
-                    df_hardness = generate_mock_hardness_data()
-            else:
-                df_hardness = generate_mock_hardness_data()
-
-            # Rail replacement
-            if 'Rail Replacement data' in sheets:
-                df_rail_raw = pd.read_excel(DATA_PATH, sheet_name='Rail Replacement data')
-                df_rail = parse_rail_replacement_dataframe(df_rail_raw)
-            else:
-                df_rail = parse_rail_replacement_dataframe(generate_mock_rail_replacement_data())
-
+            df_wheels, df_hardness, df_rail = load_data_from_path(DATA_PATH)
             return df_wheels, df_hardness, df_rail, True
         except Exception as e:
             print(f"Error loading Excel: {e}. Using mock data.")
@@ -584,20 +688,130 @@ df_wheels, df_hardness, df_rail_replacement, using_real_data = load_data()
 # ============== ROUTES ==============
 
 @app.route('/')
+@login_required
 def index():
-    return render_template('index.html', using_real_data=using_real_data)
+    return render_template('index.html', using_real_data=using_real_data, user=get_current_user())
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    ensure_db()
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+
+        if not username or not password:
+            flash('Please enter username and password', 'error')
+            return render_template('login.html')
+
+        conn = get_db_connection()
+        user = conn.execute(
+            "SELECT * FROM users WHERE username = ?",
+            (username,)
+        ).fetchone()
+        conn.close()
+
+        if user and bcrypt.check_password_hash(user['password_hash'], password):
+            if not user['is_active']:
+                flash('Account is disabled', 'error')
+                return render_template('login.html')
+
+            session['user_id'] = user['id']
+            session['username'] = user['username']
+            session['role'] = user['role']
+            return redirect(url_for('index'))
+        else:
+            flash('Invalid username or password', 'error')
+
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+@app.route('/api/me')
+@login_required
+def current_user_api():
+    user = get_current_user()
+    return jsonify({
+        'id': user['id'],
+        'username': user['username'],
+        'role': user['role']
+    })
+
+@app.route('/api/users', methods=['GET'])
+@admin_required
+def list_users():
+    conn = get_db_connection()
+    users = conn.execute(
+        "SELECT id, username, role, is_active, created_at FROM users ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    return jsonify([dict(u) for u in users])
+
+@app.route('/api/users', methods=['POST'])
+@admin_required
+def create_user():
+    data = request.get_json()
+    username = (data.get('username') or '').strip()
+    password = data.get('password', '')
+    role = data.get('role', 'user')
+
+    if not username or not password:
+        return jsonify({'success': False, 'error': 'Username and password are required'}), 400
+
+    if role not in ('admin', 'user'):
+        return jsonify({'success': False, 'error': 'Role must be admin or user'}), 400
+
+    password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+            (username, password_hash, role)
+        )
+        user_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True, 'user_id': user_id}), 201
+    except sqlite3.IntegrityError:
+        return jsonify({'success': False, 'error': 'Username already exists'}), 409
+
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+@admin_required
+def delete_user(user_id):
+    # Prevent deleting yourself
+    if user_id == session['user_id']:
+        return jsonify({'success': False, 'error': 'Cannot delete your own account'}), 400
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True}), 200
 
 @app.route('/api/status')
+@login_required
 def status():
+    user = get_current_user()
     return jsonify({
         'using_real_data': using_real_data,
         'data_path': DATA_PATH,
         'data_path_exists': os.path.exists(DATA_PATH),
         'total_wheel_records': len(df_wheels),
-        'hardness_sections': len(df_hardness)
+        'hardness_sections': len(df_hardness),
+        'user': {
+            'id': user['id'],
+            'username': user['username'],
+            'role': user['role']
+        }
     })
 
 @app.route('/api/sample')
+@login_required
 def download_sample():
     """Download a sample Excel file with data validation."""
     output = generate_sample_excel()
@@ -609,8 +823,9 @@ def download_sample():
     )
 
 @app.route('/api/upload', methods=['POST'])
+@login_required
 def upload_file():
-    """Handle Excel file upload with in-memory validation for all 3 sheets."""
+    """Handle Excel file upload with in-memory validation and version history."""
     if 'file' not in request.files:
         return jsonify({'success': False, 'errors': ['No file part in the request.'], 'warnings': []}), 400
 
@@ -625,11 +840,11 @@ def upload_file():
             'warnings': []
         }), 400
 
+    user_id = session['user_id']
+
     try:
-        # Read file into memory so pandas doesn't lock the destination file on Windows
         file_bytes = io.BytesIO(file.read())
 
-        # Try to read workbook
         try:
             xls = pd.ExcelFile(file_bytes)
             sheets = xls.sheet_names
@@ -651,14 +866,14 @@ def upload_file():
         all_warnings = []
         all_stats = {}
 
-        # Validate wheel replacement sheet (required)
         df_wheels_raw = pd.read_excel(file_bytes, sheet_name='LT wheel replacement data')
         wheel_validation = validate_wheel_dataframe(df_wheels_raw)
         all_errors.extend(wheel_validation['errors'])
         all_warnings.extend(wheel_validation['warnings'])
         all_stats['wheel_replacement'] = wheel_validation['stats']
 
-        # Validate rail hardness sheet (optional)
+        total_wheel_records = wheel_validation['stats'].get('total_rows', 0)
+
         if 'Rail Hardness data' in sheets:
             try:
                 file_bytes.seek(0)
@@ -670,7 +885,6 @@ def upload_file():
             except Exception as e:
                 all_warnings.append(f"Could not validate Rail Hardness data: {str(e)}")
 
-        # Validate rail replacement sheet (optional)
         if 'Rail Replacement data' in sheets:
             try:
                 file_bytes.seek(0)
@@ -682,7 +896,7 @@ def upload_file():
             except Exception as e:
                 all_warnings.append(f"Could not validate Rail Replacement data: {str(e)}")
 
-        # Only block on truly fatal errors (empty wheel sheet)
+        # Only block on truly fatal errors (e.g. completely empty wheel sheet)
         fatal_errors = [e for e in all_errors if 'no data rows' in e.lower()]
         if fatal_errors:
             return jsonify({
@@ -692,10 +906,46 @@ def upload_file():
                 'stats': all_stats
             }), 400
 
-        # Save validated file to disk
+        # Save validated file to disk as active data file
         os.makedirs(DATA_DIR, exist_ok=True)
         file_bytes.seek(0)
         with open(DATA_PATH, 'wb') as f:
+            f.write(file_bytes.read())
+
+        # Save as a version in DB
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Deactivate previous active version for this user
+        cursor.execute(
+            "UPDATE excel_versions SET is_active = 0 WHERE user_id = ? AND is_active = 1",
+            (user_id,)
+        )
+
+        # Calculate version number
+        cursor.execute(
+            "SELECT COUNT(*) FROM excel_versions WHERE user_id = ?",
+            (user_id,)
+        )
+        version_number = cursor.fetchone()[0] + 1
+
+        original_filename = secure_filename(file.filename)
+        stored_filename = f"user_{user_id}_v{version_number}_{original_filename}"
+
+        cursor.execute(
+            """INSERT INTO excel_versions
+               (user_id, filename, stored_filename, version_number, is_active, total_wheel_records)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (user_id, original_filename, stored_filename, version_number, 1, total_wheel_records)
+        )
+        version_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+
+        # Save actual version file
+        file_bytes.seek(0)
+        version_path = get_version_storage_path(version_id)
+        with open(version_path, 'wb') as f:
             f.write(file_bytes.read())
 
         # Reload global data
@@ -707,7 +957,9 @@ def upload_file():
             'warnings': all_warnings,
             'stats': all_stats,
             'using_real_data': using_real_data,
-            'total_wheel_records': len(df_wheels)
+            'total_wheel_records': len(df_wheels),
+            'version_id': version_id,
+            'version_number': version_number
         }), 200
 
     except Exception as e:
@@ -717,7 +969,112 @@ def upload_file():
             'warnings': []
         }), 500
 
+@app.route('/api/versions')
+@login_required
+def list_versions():
+    """List Excel versions for the current user (or all if admin)."""
+    user = get_current_user()
+    conn = get_db_connection()
+
+    if user['role'] == 'admin':
+        versions = conn.execute(
+            """SELECT v.*, u.username FROM excel_versions v
+               JOIN users u ON v.user_id = u.id
+               ORDER BY v.created_at DESC"""
+        ).fetchall()
+    else:
+        versions = conn.execute(
+            """SELECT v.*, u.username FROM excel_versions v
+               JOIN users u ON v.user_id = u.id
+               WHERE v.user_id = ?
+               ORDER BY v.created_at DESC""",
+            (user['id'],)
+        ).fetchall()
+
+    conn.close()
+    return jsonify([dict(v) for v in versions])
+
+@app.route('/api/versions/<int:version_id>/activate', methods=['POST'])
+@login_required
+def activate_version(version_id):
+    """Activate a previous version and reload data from it."""
+    user = get_current_user()
+    conn = get_db_connection()
+
+    version = conn.execute(
+        "SELECT * FROM excel_versions WHERE id = ?",
+        (version_id,)
+    ).fetchone()
+
+    if not version:
+        conn.close()
+        return jsonify({'success': False, 'error': 'Version not found'}), 404
+
+    if user['role'] != 'admin' and version['user_id'] != user['id']:
+        conn.close()
+        return jsonify({'success': False, 'error': 'Access denied'}), 403
+
+    version_path = get_version_storage_path(version_id)
+    if not os.path.exists(version_path):
+        conn.close()
+        return jsonify({'success': False, 'error': 'Version file not found'}), 404
+
+    # Copy version file to active data path
+    shutil.copy2(version_path, DATA_PATH)
+
+    # Update active flags
+    conn.execute(
+        "UPDATE excel_versions SET is_active = 0 WHERE user_id = ?",
+        (version['user_id'],)
+    )
+    conn.execute(
+        "UPDATE excel_versions SET is_active = 1 WHERE id = ?",
+        (version_id,)
+    )
+    conn.commit()
+    conn.close()
+
+    # Reload global data
+    reload_data()
+
+    return jsonify({
+        'success': True,
+        'message': f"Version {version['version_number']} activated",
+        'version_id': version_id
+    })
+
+@app.route('/api/versions/<int:version_id>/download')
+@login_required
+def download_version(version_id):
+    """Download a specific Excel version."""
+    user = get_current_user()
+    conn = get_db_connection()
+
+    version = conn.execute(
+        "SELECT * FROM excel_versions WHERE id = ?",
+        (version_id,)
+    ).fetchone()
+    conn.close()
+
+    if not version:
+        return jsonify({'success': False, 'error': 'Version not found'}), 404
+
+    if user['role'] != 'admin' and version['user_id'] != user['id']:
+        return jsonify({'success': False, 'error': 'Access denied'}), 403
+
+    version_path = get_version_storage_path(version_id)
+    if not os.path.exists(version_path):
+        return jsonify({'success': False, 'error': 'Version file not found'}), 404
+
+    return send_file(
+        version_path,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=version['filename']
+    )
+
 @app.route('/api/summary')
+@login_required
 def get_summary():
     df = df_wheels.copy()
     df = df.dropna(subset=['Date'])
@@ -726,13 +1083,11 @@ def get_summary():
     west_count = int(df[df['Crane'].astype(str).str.contains('west', case=False, na=False)].shape[0])
     east_count = int(df[df['Crane'].astype(str).str.contains('East', case=False, na=False)].shape[0])
 
-    # Monthly trend
     df['Month'] = df['Date'].dt.to_period('M')
     monthly = df.groupby('Month').size().reset_index(name='Count')
     monthly['Month_str'] = monthly['Month'].astype(str)
     monthly = monthly.drop(columns=['Month'])
 
-    # Hardness stats
     north_vals = df_hardness['North'].dropna().tolist()
     south_vals = df_hardness['South'].dropna().tolist()
     all_hardness = [float(v) for v in (north_vals + south_vals) if pd.notna(v)]
@@ -761,6 +1116,7 @@ def get_summary():
     })
 
 @app.route('/api/hardness-data')
+@login_required
 def get_hardness_data():
     sections = df_hardness['Section'].astype(str).tolist()
     north = [safe_float(v) for v in df_hardness['North'].values]
@@ -776,6 +1132,7 @@ def get_hardness_data():
     })
 
 @app.route('/api/hardness-heatmap')
+@login_required
 def hardness_heatmap():
     result = []
     for _, row in df_hardness.iterrows():
@@ -791,6 +1148,7 @@ def hardness_heatmap():
     return jsonify(result)
 
 @app.route('/api/hardness-correlation')
+@login_required
 def hardness_correlation():
     risk_zones = []
     for _, row in df_hardness.iterrows():
@@ -823,6 +1181,7 @@ def hardness_correlation():
     })
 
 @app.route('/api/wheel-failure-analysis')
+@login_required
 def wheel_failure_analysis():
     df = df_wheels.copy()
     df = df.dropna(subset=['Date'])
@@ -856,6 +1215,7 @@ def wheel_failure_analysis():
     })
 
 @app.route('/api/failure-distribution')
+@login_required
 def failure_distribution():
     df = df_wheels.copy()
     df = df.dropna(subset=['Date'])
@@ -888,6 +1248,7 @@ def failure_distribution():
     })
 
 @app.route('/api/rail-replacement')
+@login_required
 def rail_replacement():
     df = df_rail_replacement.copy()
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
@@ -903,6 +1264,7 @@ def rail_replacement():
     })
 
 @app.route('/api/predict/<int:months_ahead>')
+@login_required
 def predict_failures(months_ahead):
     df = df_wheels.copy()
     df = df.dropna(subset=['Date'])
@@ -974,6 +1336,7 @@ def predict_failures(months_ahead):
     })
 
 @app.route('/api/scatter-hardness-failures')
+@login_required
 def scatter_hardness_failures():
     """Simulated correlation: hardness vs failure count by section"""
     df = df_wheels.copy()

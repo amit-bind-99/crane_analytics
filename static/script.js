@@ -1,4 +1,5 @@
 const charts = {};
+let currentUser = null;
 
 const COLORS = {
     primary: '#2563eb',
@@ -40,6 +41,10 @@ function destroyChart(id) {
 
 async function fetchJSON(url) {
     const res = await fetch(url);
+    if (res.status === 401) {
+        window.location.href = '/login';
+        return;
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     return res.json();
 }
@@ -133,16 +138,24 @@ function handleFiles(e) {
     if (files.length) uploadFile(files[0]);
 }
 
+function setUploadProgress(pct) {
+    const arc = document.getElementById('spinnerArc');
+    const pctEl = document.getElementById('spinnerPct');
+    if (!arc || !pctEl) return;
+    const circumference = 126;
+    arc.style.strokeDashoffset = circumference - (circumference * pct / 100);
+    pctEl.textContent = `${pct}%`;
+}
+
 async function uploadFile(file) {
     const progressEl = document.getElementById('uploadProgress');
-    const progressFill = document.getElementById('progressFill');
     const progressText = document.getElementById('progressText');
     const validationResult = document.getElementById('validationResult');
 
     validationResult.innerHTML = '';
+    setUploadProgress(0);
+    progressText.textContent = 'Uploading…';
     progressEl.hidden = false;
-    progressFill.style.width = '0%';
-    progressText.textContent = 'Uploading...';
 
     const formData = new FormData();
     formData.append('file', file);
@@ -152,18 +165,12 @@ async function uploadFile(file) {
         await new Promise((resolve, reject) => {
             xhr.upload.addEventListener('progress', (e) => {
                 if (e.lengthComputable) {
-                    const pct = Math.round((e.loaded / e.total) * 100);
-                    progressFill.style.width = `${pct}%`;
+                    setUploadProgress(Math.round((e.loaded / e.total) * 100));
                 }
             });
-
-            xhr.addEventListener('load', () => {
-                progressFill.style.width = '100%';
-                resolve(xhr);
-            });
+            xhr.addEventListener('load', () => { setUploadProgress(100); resolve(xhr); });
             xhr.addEventListener('error', () => reject(new Error('Upload failed')));
             xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
-
             xhr.open('POST', '/api/upload');
             xhr.send(formData);
         });
@@ -171,23 +178,27 @@ async function uploadFile(file) {
         const result = JSON.parse(xhr.responseText);
 
         if (result.success) {
-            progressText.textContent = 'Upload complete';
+            progressText.textContent = 'Upload complete ✓';
+            document.getElementById('spinnerArc').style.stroke = 'var(--success)';
             showToast(`Upload successful! Loaded ${result.total_wheel_records || 0} records.`, 'success');
             renderValidationResult(result);
             await loadDashboard();
         } else {
             progressText.textContent = 'Upload failed';
+            document.getElementById('spinnerArc').style.stroke = 'var(--danger)';
             showToast(result.errors?.[0] || 'Upload failed', 'error');
             renderValidationResult(result);
         }
     } catch (error) {
         progressText.textContent = 'Upload failed';
+        if (document.getElementById('spinnerArc')) document.getElementById('spinnerArc').style.stroke = 'var(--danger)';
         showToast(error.message || 'Upload failed', 'error');
     } finally {
         setTimeout(() => {
             progressEl.hidden = true;
-            progressFill.style.width = '0%';
-        }, 1500);
+            setUploadProgress(0);
+            if (document.getElementById('spinnerArc')) document.getElementById('spinnerArc').style.stroke = '';
+        }, 1800);
         document.getElementById('fileInput').value = '';
     }
 }
@@ -250,7 +261,13 @@ function renderValidationResult(result) {
 
 async function loadStatus() {
     try {
-        const data = await fetchJSON('/api/status');
+        const [data, me] = await Promise.all([
+            fetchJSON('/api/status'),
+            fetchJSON('/api/me')
+        ]);
+        currentUser = me;
+        renderUserBar(me);
+
         const badge = document.getElementById('dataBadge');
         const footerNote = document.getElementById('footerNote');
         badge.classList.remove('real', 'mock');
@@ -265,6 +282,18 @@ async function loadStatus() {
         }
     } catch (e) {
         console.error(e);
+    }
+}
+
+function renderUserBar(user) {
+    const nameEl = document.getElementById('userName');
+    const roleEl = document.getElementById('userRole');
+    const adminControls = document.getElementById('adminControls');
+
+    if (nameEl) nameEl.textContent = user.username;
+    if (roleEl) roleEl.textContent = user.role;
+    if (adminControls) {
+        adminControls.hidden = user.role !== 'admin';
     }
 }
 
@@ -845,15 +874,17 @@ async function updateForecast(months) {
 function setupControls() {
     const slider = document.getElementById('forecastSlider');
     const refreshBtn = document.getElementById('refreshBtn');
+    const historyBtn = document.getElementById('historyBtn');
+    const manageUsersBtn = document.getElementById('manageUsersBtn');
 
     if (slider) {
+        let debounceTimer = null;
         slider.addEventListener('input', (e) => {
             const months = parseInt(e.target.value, 10);
             const forecastValue = document.getElementById('forecastValue');
             if (forecastValue) forecastValue.textContent = `${months} month${months === 1 ? '' : 's'}`;
-        });
-        slider.addEventListener('change', (e) => {
-            updateForecast(parseInt(e.target.value, 10));
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => updateForecast(months), 400);
         });
     }
 
@@ -875,6 +906,241 @@ function setupControls() {
                 `;
             });
         });
+    }
+
+    if (historyBtn) {
+        historyBtn.addEventListener('click', openHistoryModal);
+    }
+
+    if (manageUsersBtn) {
+        manageUsersBtn.addEventListener('click', openUsersModal);
+    }
+
+    setupModals();
+    setupUserForm();
+}
+
+// ============== MODALS ==============
+
+function setupModals() {
+    const historyModal = document.getElementById('historyModal');
+    const usersModal = document.getElementById('usersModal');
+
+    document.getElementById('closeHistoryModal')?.addEventListener('click', () => {
+        historyModal.hidden = true;
+    });
+
+    document.getElementById('closeUsersModal')?.addEventListener('click', () => {
+        usersModal.hidden = true;
+    });
+
+    historyModal?.addEventListener('click', (e) => {
+        if (e.target === historyModal) historyModal.hidden = true;
+    });
+
+    usersModal?.addEventListener('click', (e) => {
+        if (e.target === usersModal) usersModal.hidden = true;
+    });
+}
+
+function openHistoryModal() {
+    const modal = document.getElementById('historyModal');
+    modal.hidden = false;
+    loadVersionHistory();
+}
+
+function openUsersModal() {
+    const modal = document.getElementById('usersModal');
+    modal.hidden = false;
+    loadUsers();
+}
+
+// ============== VERSION HISTORY ==============
+
+async function loadVersionHistory() {
+    const container = document.getElementById('historyContainer');
+    container.innerHTML = '<div class="loading">Loading upload history...</div>';
+
+    try {
+        const versions = await fetchJSON('/api/versions');
+        renderVersionHistory(versions);
+    } catch (error) {
+        container.innerHTML = `<div class="loading" style="color:${COLORS.danger}">Error loading history</div>`;
+    }
+}
+
+function renderVersionHistory(versions) {
+    const container = document.getElementById('historyContainer');
+
+    if (!versions || versions.length === 0) {
+        container.innerHTML = '<div class="loading">No upload history found.</div>';
+        return;
+    }
+
+    const isAdmin = currentUser?.role === 'admin';
+
+    const html = `
+        <table class="history-table">
+            <thead>
+                <tr>
+                    <th>Version</th>
+                    <th>Filename</th>
+                    ${isAdmin ? '<th>Uploaded By</th>' : ''}
+                    <th>Records</th>
+                    <th>Uploaded At</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${versions.map(v => `
+                    <tr class="${v.is_active ? 'active-version' : ''}">
+                        <td><strong>#${v.version_number}</strong></td>
+                        <td>${v.filename}</td>
+                        ${isAdmin ? `<td>${v.username}</td>` : ''}
+                        <td>${v.total_wheel_records || 0}</td>
+                        <td>${formatDate(v.created_at)}</td>
+                        <td>
+                            ${v.is_active
+                                ? '<span class="status-badge active">Active</span>'
+                                : '<span class="status-badge">Archived</span>'}
+                        </td>
+                        <td>
+                            <div class="history-actions">
+                                <a href="/api/versions/${v.id}/download" class="btn btn-secondary btn-sm">Download</a>
+                                ${!v.is_active ? `<button class="btn btn-primary btn-sm" onclick="activateVersion(${v.id})">Activate</button>` : ''}
+                            </div>
+                        </td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `;
+
+    container.innerHTML = html;
+}
+
+async function activateVersion(versionId) {
+    try {
+        const res = await fetch(`/api/versions/${versionId}/activate`, { method: 'POST' });
+        const result = await res.json();
+        if (result.success) {
+            showToast(result.message, 'success');
+            await loadVersionHistory();
+            await loadDashboard();
+        } else {
+            showToast(result.error || 'Activation failed', 'error');
+        }
+    } catch (error) {
+        showToast('Activation failed', 'error');
+    }
+}
+
+function formatDate(dateString) {
+    if (!dateString) return 'N/A';
+    const date = new Date(dateString);
+    return date.toLocaleString();
+}
+
+// ============== USER MANAGEMENT ==============
+
+function setupUserForm() {
+    const form = document.getElementById('createUserForm');
+    if (!form) return;
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const username = document.getElementById('newUsername').value.trim();
+        const password = document.getElementById('newPassword').value;
+        const role = document.getElementById('newRole').value;
+
+        try {
+            const res = await fetch('/api/users', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password, role })
+            });
+            const result = await res.json();
+
+            if (result.success) {
+                showToast('User created successfully', 'success');
+                form.reset();
+                await loadUsers();
+            } else {
+                showToast(result.error || 'Failed to create user', 'error');
+            }
+        } catch (error) {
+            showToast('Failed to create user', 'error');
+        }
+    });
+}
+
+async function loadUsers() {
+    const container = document.getElementById('usersContainer');
+    container.innerHTML = '<div class="loading">Loading users...</div>';
+
+    try {
+        const users = await fetchJSON('/api/users');
+        renderUsers(users);
+    } catch (error) {
+        container.innerHTML = `<div class="loading" style="color:${COLORS.danger}">Error loading users</div>`;
+    }
+}
+
+function renderUsers(users) {
+    const container = document.getElementById('usersContainer');
+
+    if (!users || users.length === 0) {
+        container.innerHTML = '<div class="loading">No users found.</div>';
+        return;
+    }
+
+    const html = `
+        <table class="history-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Username</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${users.map(u => `
+                    <tr>
+                        <td>${u.id}</td>
+                        <td><strong>${u.username}</strong></td>
+                        <td><span class="role-badge ${u.role}">${u.role}</span></td>
+                        <td><span class="status-badge ${u.is_active ? 'active' : 'inactive'}">${u.is_active ? 'Active' : 'Inactive'}</span></td>
+                        <td>${formatDate(u.created_at)}</td>
+                        <td>
+                            ${u.id !== currentUser?.id ? `<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id})">Delete</button>` : '<span class="text-muted">Current user</span>'}
+                        </td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `;
+
+    container.innerHTML = html;
+}
+
+async function deleteUser(userId) {
+    if (!confirm('Are you sure you want to delete this user?')) return;
+
+    try {
+        const res = await fetch(`/api/users/${userId}`, { method: 'DELETE' });
+        const result = await res.json();
+        if (result.success) {
+            showToast('User deleted successfully', 'success');
+            await loadUsers();
+        } else {
+            showToast(result.error || 'Failed to delete user', 'error');
+        }
+    } catch (error) {
+        showToast('Failed to delete user', 'error');
     }
 }
 

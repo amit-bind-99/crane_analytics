@@ -1,6 +1,6 @@
 # YZ Bay — Crane LT Wheel Failure Reduction Dashboard
 
-A **Flask-based predictive maintenance dashboard** that analyses crane wheel failures in relation to rail hardness data, forecasts future failures using machine learning, and recommends maintenance actions.
+A **Flask-based predictive maintenance dashboard** that analyses crane wheel failures in relation to rail hardness data, forecasts future failures using machine learning, and recommends maintenance actions. The app now includes **user authentication**, **SQLite-backed Excel version history**, and **admin user management**.
 
 ---
 
@@ -10,6 +10,8 @@ A **Flask-based predictive maintenance dashboard** that analyses crane wheel fai
 2. [Project Structure](#project-structure)
 3. [How It Works](#how-it-works)
    - [Data Layer](#data-layer)
+   - [Authentication & Users](#authentication--users)
+   - [Excel Version History](#excel-version-history)
    - [Analytics Engine](#analytics-engine)
    - [API Endpoints](#api-endpoints)
    - [Frontend Dashboard](#frontend-dashboard)
@@ -20,6 +22,7 @@ A **Flask-based predictive maintenance dashboard** that analyses crane wheel fai
 6. [Using Real Excel Data](#using-real-excel-data)
 7. [Environment Variables](#environment-variables)
 8. [Tech Stack](#tech-stack)
+9. [Database](#database)
 
 ---
 
@@ -31,24 +34,30 @@ The dashboard targets the **YZ Bay** facility and tracks two overhead travelling
 - Forecast how many wheel replacements are expected in the next 1–12 months
 - Recommend maintenance priority (Normal → Medium → High → Critical)
 
+New capabilities include secure login, per-user Excel uploads, and the ability to view or reactivate previously uploaded Excel files.
+
 ---
 
 ## Project Structure
 
 ```
 crane_analytics/
-├── app.py                  # Flask application — routes, data loading, ML predictions
+├── app.py                  # Flask application — routes, data loading, ML predictions, auth, DB
 ├── requirements.txt        # Python dependencies
 │
 ├── templates/
-│   └── index.html          # Single-page dashboard (Jinja2 template)
+│   ├── index.html          # Single-page dashboard (Jinja2 template)
+│   └── login.html          # Login page
 │
 ├── static/
-│   ├── script.js           # Chart.js chart rendering and API calls
-│   └── style.css           # Dashboard styling (CSS variables, responsive grid)
+│   ├── script.js           # Chart.js rendering, upload, auth, version history
+│   ├── style.css           # Dashboard styling
+│   └── auth.css            # Login / modal / history styling
 │
-├── data/                   # Drop your Excel file here (see below)
-│   └── LT Wheel replacement data.xlsx   ← optional; mock data used if absent
+├── data/                   # SQLite DB, active Excel, and version files
+│   ├── crane_analytics.db
+│   ├── LT Wheel replacement data.xlsx   ← active data file
+│   └── version_*.xlsx                   ← previous uploaded versions
 │
 ├── Dockerfile              # Multi-stage Docker image (builder + slim runtime)
 ├── docker-compose.yml      # Local development stack
@@ -67,10 +76,28 @@ crane_analytics/
 `app.py` calls `load_data()` at startup:
 
 1. If `data/LT Wheel replacement data.xlsx` exists it reads three sheets:
-   - **LT wheel replacement data** — date, crane, equipment, position, remarks
+   - **LT wheel replacement data** — date, crane, equipment, job description, remarks
    - **Rail Hardness data** — HB values per section (North & South sides)
-   - **Rail Replacement data** — logged rail replacement events
+   - **Rail Replacement data** — rail replacement events (old or new format)
 2. If the file is missing or corrupt, three `generate_mock_*()` functions produce realistic synthetic data so the dashboard is always runnable.
+
+### Authentication & Users
+
+- The app uses **Flask sessions** for authentication and **flask-bcrypt** for password hashing.
+- On first run, a default admin is created:
+  - **Username:** `admin`
+  - **Password:** `admin123`
+- Admins can create/delete users via the **Manage Users** modal.
+- Only logged-in users can access the dashboard or API.
+- All dashboard and API routes (except `/login` and `/logout`) require login.
+
+### Excel Version History
+
+- Every uploaded Excel file is validated, saved as the active `data/LT Wheel replacement data.xlsx`, and stored as a version record in the database (`excel_versions` table).
+- Users can open the **History** modal to:
+  - See all their past uploads (admins see everyone's)
+  - Download any previous version
+  - Reactivate an older version, which copies it back to the active data file and reloads the dashboard
 
 ### Analytics Engine
 
@@ -90,9 +117,17 @@ A value of 0 = normal operation; 1.0 = hardness is 100 HB above the threshold.
 
 ### API Endpoints
 
+#### Public
+| Method | Path | Description |
+|---|---|---|
+| GET/POST | `/login` | Login page |
+| GET | `/logout` | Clear session |
+
+#### Authenticated
 | Method | Path | Returns |
 |---|---|---|
 | GET | `/` | HTML dashboard |
+| GET | `/api/me` | Current user info |
 | GET | `/api/status` | Data source status and record counts |
 | GET | `/api/summary` | KPIs, monthly trend, hardness stats |
 | GET | `/api/hardness-data` | Per-section HB values for chart |
@@ -103,6 +138,18 @@ A value of 0 = normal operation; 1.0 = hardness is 100 HB above the threshold.
 | GET | `/api/rail-replacement` | Rail replacement log |
 | GET | `/api/predict/<int:months>` | ML failure forecast for N months |
 | GET | `/api/scatter-hardness-failures` | Hardness vs estimated failures (scatter) |
+| GET | `/api/sample` | Download a sample Excel workbook |
+| POST | `/api/upload` | Upload and validate a new Excel file |
+| GET | `/api/versions` | List Excel upload history |
+| POST | `/api/versions/<id>/activate` | Reactivate a previous version |
+| GET | `/api/versions/<id>/download` | Download a previous version |
+
+#### Admin only
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/users` | List all users |
+| POST | `/api/users` | Create a new user |
+| DELETE | `/api/users/<id>` | Delete a user |
 
 ### Frontend Dashboard
 
@@ -150,6 +197,10 @@ python app.py
 
 Open **http://localhost:5000** in your browser.
 
+**Default login:**
+- Username: `admin`
+- Password: `admin123`
+
 ### With Docker Compose
 
 ```bash
@@ -163,7 +214,7 @@ docker compose up --build -d
 docker compose down
 ```
 
-The `data/` folder is mounted as a volume — drop your Excel file there without rebuilding the image.
+The `data/` folder is mounted as a volume — uploaded Excel files and the SQLite database persist across restarts.
 
 ---
 
@@ -187,15 +238,16 @@ The `data/` folder is mounted as a volume — drop your Excel file there without
    - Click **New Project → Deploy from GitHub repo**
    - Select your `crane_analytics` repository
 
-3. **Railway auto-detects the Dockerfile** and builds it. No manual configuration needed.
+3. **Railway auto-detects the Dockerfile** and builds it.
 
-4. **Add environment variables** (optional)
+4. **Add environment variables**
 
    In the Railway dashboard → your service → **Variables**:
 
    | Key | Value |
    |---|---|
    | `FLASK_ENV` | `production` |
+   | `SECRET_KEY` | `<generate-a-long-random-string>` |
 
    (`PORT` is set automatically by Railway.)
 
@@ -215,23 +267,25 @@ git push
 
 Railway automatically rebuilds and redeploys on every push to `main`.
 
-### Adding real Excel data on Railway
+### Important: persistent storage on Railway
 
-Because Railway doesn't support persistent disk by default on the free tier, the recommended approach is to **commit the Excel file** to a private GitHub repository, or use Railway's persistent volume (paid) mounted at `/app/data`.
+Railway's free tier does **not** guarantee persistent disk. If you want uploaded Excel files and the SQLite database to survive redeploys, enable a **persistent volume** mounted at `/app/data`, or migrate to **Supabase PostgreSQL** (see [Database](#database)).
 
 ---
 
 ## Using Real Excel Data
 
-Place your Excel file at `data/LT Wheel replacement data.xlsx`. It must contain these sheets:
+Upload your Excel file through the dashboard's drag-and-drop area, or place it at `data/LT Wheel replacement data.xlsx`. It must contain these sheets:
 
 | Sheet name | Required columns |
 |---|---|
-| `LT wheel replacement data` | `Date`, `Crane`, `Equipment`, `Position`, `Remarks` |
-| `Rail Hardness data` | Columns 3–14 = sections 21-22 through 32-33; row 1 = North values, row 2 = South values |
-| `Rail Replacement data` | `Date`, `Section`, `Side`, `Qty_Pieces`, `Reason` |
+| `LT wheel replacement data` | `Date`, `Crane`, `Equipment`, `Remarks` (optional: `S.no.`, `Job Description`) |
+| `Rail Hardness data` | Row 1 = section names (cols C–N); row 2 = North HB; row 3 = South HB |
+| `Rail Replacement data` | New format: `S.no.`, `Date`, `Crane`, `Notification no.`, `Equipment`, `Job Description`, `Remarks` |
 
-If any sheet is missing or the file is absent, the app silently falls back to mock data — the badge in the header shows **"Demo Mock Data"** vs **"Live Excel Data"**.
+If any sheet is missing or the file is absent, the app falls back to mock data — the badge in the header shows **"Demo Mock Data"** vs **"Live Excel Data"**.
+
+Click **Sample File** to download a validated template with dropdown lists.
 
 ---
 
@@ -241,6 +295,7 @@ If any sheet is missing or the file is absent, the app silently falls back to mo
 |---|---|---|
 | `PORT` | `5000` | Port the server listens on (auto-set by Railway) |
 | `FLASK_ENV` | `production` | Set to `development` to enable Flask debug mode |
+| `SECRET_KEY` | *(built-in)* | Flask session secret — **change in production** |
 
 Copy `.env.example` to `.env` for local overrides.
 
@@ -251,6 +306,8 @@ Copy `.env.example` to `.env` for local overrides.
 | Layer | Technology |
 |---|---|
 | Backend framework | Flask 3.0 |
+| Authentication | Flask sessions + flask-bcrypt |
+| Database | SQLite (free forever, file-based) |
 | Data processing | pandas, NumPy |
 | Machine learning | scikit-learn (LinearRegression, PolynomialFeatures) |
 | Excel parsing | openpyxl |
@@ -258,3 +315,31 @@ Copy `.env.example` to `.env` for local overrides.
 | Frontend charting | Chart.js 4.4 |
 | Containerisation | Docker (multi-stage build) |
 | Deployment | Railway |
+
+---
+
+## Database
+
+This project uses **SQLite** by default because it is:
+
+- **Free forever** — no hosting cost, no usage limits
+- **Zero setup** — a single `.db` file
+- **Portable** — works locally and inside Docker without extra services
+- **Sufficient** for this app's workload (users, Excel metadata, version history)
+
+The database file is created automatically at `data/crane_analytics.db` when the app first starts.
+
+### Tables
+
+| Table | Purpose |
+|---|---|
+| `users` | Login accounts, password hashes, roles (`admin` / `user`) |
+| `excel_versions` | Metadata for every uploaded Excel file (filename, version number, record count, active flag) |
+
+### Upgrade path
+
+If you later need multi-server deployment or cloud syncing, you can migrate to **Supabase PostgreSQL** or **PostgreSQL on Railway** by replacing the `get_db_connection()` function and connection string. The table schema remains compatible.
+
+### Security note
+
+The default admin password is `admin123`. **Change it immediately after first login** by creating a new admin user and deleting the default one, or by updating the password hash directly in the database.
