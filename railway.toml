@@ -1,0 +1,14 @@
+# Railway deployment configuration
+# https://docs.railway.app/reference/config-as-code
+
+[build]
+# Railway auto-detects Dockerfile; this section is optional but explicit
+dockerfile = "Dockerfile"
+
+[deploy]
+startCommand = "gunicorn --bind 0.0.0.0:$PORT --workers 2 --timeout 120 app:app"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+[[services]]
+name = "crane-analytics"

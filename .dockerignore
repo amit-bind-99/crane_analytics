@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Environment files
+.env
+.env.local
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Docs (don't copy into image)
+*.md
+
+# Test / CI
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log

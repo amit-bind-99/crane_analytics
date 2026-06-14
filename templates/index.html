@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YZ Bay | Crane LT Wheel Failure Reduction Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-content">
+                <div>
+                    <div class="eyebrow">YZ Bay Predictive Maintenance</div>
+                    <h1>Crane LT Wheel Failure Reduction</h1>
+                    <p class="subtitle">Rail hardness analysis, failure pattern detection, and predictive maintenance recommendations</p>
+                </div>
+                <div class="header-actions">
+                    <span class="data-badge" id="dataBadge">Loading data status...</span>
+                    <button class="btn btn-secondary" id="refreshBtn" type="button">Refresh Data</button>
+                </div>
+            </div>
+        </header>
+
+        <section class="insights-row" id="insightsContainer">
+            <div class="loading">Loading executive insights...</div>
+        </section>
+
+        <section class="stats-grid" id="statsContainer">
+            <div class="loading">Loading KPIs...</div>
+        </section>
+
+        <section class="prediction-panel" id="predictionPanel">
+            <div class="loading">Loading predictive analytics...</div>
+        </section>
+
+        <section class="control-bar">
+            <div class="control-group">
+                <label for="forecastSlider">Forecast horizon</label>
+                <input type="range" id="forecastSlider" min="1" max="12" value="6" aria-label="Forecast months">
+                <span class="control-value" id="forecastValue">6 months</span>
+            </div>
+            <div class="control-note">Adjust the slider to see predicted failures and recommendations update in real time.</div>
+        </section>
+
+        <section class="charts-row">
+            <div class="chart-card wide">
+                <div class="chart-title">Monthly Wheel Replacement Trend</div>
+                <canvas id="failureTrendChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title">Failure by Wheel Position</div>
+                <canvas id="positionChart"></canvas>
+            </div>
+        </section>
+
+        <section class="charts-row">
+            <div class="chart-card wide">
+                <div class="chart-title">Rail Hardness Distribution (North vs South)</div>
+                <canvas id="hardnessChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title">Hardness Risk Gauge</div>
+                <div class="gauge-wrapper">
+                    <canvas id="gaugeChart"></canvas>
+                    <div class="gauge-value" id="gaugeValue">--</div>
+                    <div class="gauge-label">Avg Hardness (HB)</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="charts-row">
+            <div class="chart-card">
+                <div class="chart-title">Hardness vs Estimated Failure Risk</div>
+                <canvas id="scatterChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title">Top Failed Equipment</div>
+                <canvas id="equipmentChart"></canvas>
+            </div>
+        </section>
+
+        <section class="charts-row">
+            <div class="chart-card">
+                <div class="chart-title">Failure Distribution by Crane</div>
+                <canvas id="craneChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title">Failure Severity Breakdown</div>
+                <canvas id="severityChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <div class="chart-title">Failures by Day of Week</div>
+                <canvas id="dowChart"></canvas>
+            </div>
+        </section>
+
+        <section class="charts-row">
+            <div class="chart-card wide">
+                <div class="chart-title">Failure Forecast</div>
+                <canvas id="forecastChart"></canvas>
+            </div>
+        </section>
+
+        <section class="hardness-table">
+            <div class="chart-title">Rail Hardness by Section (HB Scale)</div>
+            <div id="hardnessTableContainer">Loading...</div>
+        </section>
+
+        <section class="hardness-table">
+            <div class="chart-title">Risk Assessment & Recommended Actions</div>
+            <div id="riskContainer">Loading...</div>
+        </section>
+
+        <section class="hardness-table">
+            <div class="chart-title">Rail Replacement Log</div>
+            <div id="replacementContainer">Loading...</div>
+        </section>
+
+        <footer class="footer">
+            <span>YZ Bay Crane Analytics</span>
+            <span id="footerNote">Confidential demo — mock data shown for illustration</span>
+        </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
