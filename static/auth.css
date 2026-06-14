@@ -210,6 +210,7 @@
 .btn-sm {
     padding: 7px 14px;
     font-size: 12px;
+    min-height: 40px;
 }
 
 .btn-danger {
@@ -286,8 +287,8 @@
 .modal-close {
     background: #f1f5f9;
     border: none;
-    width: 36px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
     border-radius: 10px;
     font-size: 22px;
     color: var(--text-muted);
@@ -296,6 +297,8 @@
     align-items: center;
     justify-content: center;
     line-height: 1;
+    min-width: 44px;
+    min-height: 44px;
 }
 
 .modal-close:hover {
@@ -306,6 +309,7 @@
 .modal-body {
     padding: 26px;
     overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 /* ============== HISTORY TABLE ============== */
@@ -314,6 +318,16 @@
     width: 100%;
     border-collapse: collapse;
     font-size: 14px;
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.history-table thead,
+.history-table tbody,
+.history-table th,
+.history-table td {
+    white-space: nowrap;
 }
 
 .history-table th,
@@ -446,14 +460,16 @@
     .history-table th,
     .history-table td { padding: 10px 8px; }
     .history-actions { flex-direction: column; gap: 6px; }
+    .history-actions .btn { width: 100%; justify-content: center; min-height: 44px; }
 
     .form-row { flex-direction: column; align-items: stretch; gap: 10px; }
     .form-row input,
     .form-row select,
-    .form-row button { width: 100%; }
+    .form-row button { width: 100%; min-height: 44px; }
 
     .user-bar { flex-direction: column; align-items: flex-start; }
     .admin-controls { width: 100%; }
+    .admin-controls .btn { width: 100%; justify-content: center; min-height: 44px; }
 }
 
 @media (max-width: 480px) {
@@ -470,7 +486,7 @@
     .history-table td:nth-child(4) { display: none; } /* Uploaded At */
 
     .status-badge, .role-badge { font-size: 10px; padding: 3px 8px; }
-    .btn-sm { padding: 6px 10px; font-size: 11px; }
+    .btn-sm { padding: 6px 10px; font-size: 11px; min-height: 40px; }
 
     /* Login page on tiny phones */
     .auth-body { padding: 0; align-items: flex-end; }
@@ -482,4 +498,3 @@
     .auth-logo { width: 48px; height: 48px; }
 }
 
-}

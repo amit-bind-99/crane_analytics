@@ -122,6 +122,17 @@ function setupUpload() {
 
     uploadSection.addEventListener('drop', handleDrop, false);
     fileInput.addEventListener('change', handleFiles, false);
+
+    /* Mobile: the file input is visually hidden. Clicking the visible upload
+       button programmatically opens the picker, which is more reliable on
+       touch browsers than relying on a <label for=...> association. */
+    const uploadBtn = document.getElementById('uploadBtn');
+    if (uploadBtn && fileInput) {
+        uploadBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            fileInput.click();
+        });
+    }
 }
 
 function preventDefaults(e) {
