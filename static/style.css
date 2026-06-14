@@ -449,6 +449,7 @@ h1 {
     flex-direction: column;
     gap: 12px;
     max-width: 380px;
+    pointer-events: none;
 }
 
 .toast {
@@ -463,6 +464,7 @@ h1 {
     opacity: 0;
     transition: all 0.35s cubic-bezier(0.68, -0.55, 0.265, 1.55);
     border-left: 5px solid var(--info);
+    pointer-events: auto;
 }
 
 .toast-visible {
@@ -1161,7 +1163,7 @@ tr:hover {
     .hardness-table { padding: 16px; border-radius: 14px; overflow-x: auto; }
 
     /* Toasts */
-    .toast-container { left: 12px; right: 12px; max-width: none; bottom: 12px; }
+    .toast-container { top: auto; left: 12px; right: 12px; max-width: none; bottom: 12px; }
     .toast { font-size: 13px; padding: 12px 14px; }
 }
 
