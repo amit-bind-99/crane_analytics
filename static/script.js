@@ -49,6 +49,205 @@ function showError(containerId, message) {
     if (el) el.innerHTML = `<div class="loading" style="color:${COLORS.danger}">${message}</div>`;
 }
 
+// ============== TOAST NOTIFICATIONS ==============
+
+function showToast(message, type = 'info', duration = 5000) {
+    const container = document.getElementById('toastContainer');
+    if (!container) return;
+
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.innerHTML = `
+        <div class="toast-icon">${toastIcon(type)}</div>
+        <div class="toast-message">${message}</div>
+        <button class="toast-close" aria-label="Close">&times;</button>
+    `;
+
+    toast.querySelector('.toast-close').addEventListener('click', () => {
+        toast.classList.add('toast-exit');
+        setTimeout(() => toast.remove(), 300);
+    });
+
+    container.appendChild(toast);
+
+    requestAnimationFrame(() => {
+        toast.classList.add('toast-visible');
+    });
+
+    setTimeout(() => {
+        if (toast.parentElement) {
+            toast.classList.add('toast-exit');
+            setTimeout(() => toast.remove(), 300);
+        }
+    }, duration);
+}
+
+function toastIcon(type) {
+    const icons = {
+        success: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+        error: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>',
+        warning: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+        info: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>'
+    };
+    return icons[type] || icons.info;
+}
+
+// ============== UPLOAD HANDLING ==============
+
+function setupUpload() {
+    const uploadSection = document.getElementById('uploadSection');
+    const fileInput = document.getElementById('fileInput');
+    const validationResult = document.getElementById('validationResult');
+
+    if (!uploadSection || !fileInput) return;
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        uploadSection.addEventListener(eventName, preventDefaults, false);
+    });
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+        uploadSection.addEventListener(eventName, () => uploadSection.classList.add('drag-active'), false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        uploadSection.addEventListener(eventName, () => uploadSection.classList.remove('drag-active'), false);
+    });
+
+    uploadSection.addEventListener('drop', handleDrop, false);
+    fileInput.addEventListener('change', handleFiles, false);
+}
+
+function preventDefaults(e) {
+    e.preventDefault();
+    e.stopPropagation();
+}
+
+function handleDrop(e) {
+    const dt = e.dataTransfer;
+    const files = dt.files;
+    if (files.length) uploadFile(files[0]);
+}
+
+function handleFiles(e) {
+    const files = e.target.files;
+    if (files.length) uploadFile(files[0]);
+}
+
+async function uploadFile(file) {
+    const progressEl = document.getElementById('uploadProgress');
+    const progressFill = document.getElementById('progressFill');
+    const progressText = document.getElementById('progressText');
+    const validationResult = document.getElementById('validationResult');
+
+    validationResult.innerHTML = '';
+    progressEl.hidden = false;
+    progressFill.style.width = '0%';
+    progressText.textContent = 'Uploading...';
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const xhr = new XMLHttpRequest();
+        await new Promise((resolve, reject) => {
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const pct = Math.round((e.loaded / e.total) * 100);
+                    progressFill.style.width = `${pct}%`;
+                }
+            });
+
+            xhr.addEventListener('load', () => {
+                progressFill.style.width = '100%';
+                resolve(xhr);
+            });
+            xhr.addEventListener('error', () => reject(new Error('Upload failed')));
+            xhr.addEventListener('abort', () => reject(new Error('Upload aborted')));
+
+            xhr.open('POST', '/api/upload');
+            xhr.send(formData);
+        });
+
+        const result = JSON.parse(xhr.responseText);
+
+        if (result.success) {
+            progressText.textContent = 'Upload complete';
+            showToast(`Upload successful! Loaded ${result.total_wheel_records || 0} records.`, 'success');
+            renderValidationResult(result);
+            await loadDashboard();
+        } else {
+            progressText.textContent = 'Upload failed';
+            showToast(result.errors?.[0] || 'Upload failed', 'error');
+            renderValidationResult(result);
+        }
+    } catch (error) {
+        progressText.textContent = 'Upload failed';
+        showToast(error.message || 'Upload failed', 'error');
+    } finally {
+        setTimeout(() => {
+            progressEl.hidden = true;
+            progressFill.style.width = '0%';
+        }, 1500);
+        document.getElementById('fileInput').value = '';
+    }
+}
+
+function renderValidationResult(result) {
+    const el = document.getElementById('validationResult');
+    if (!el) return;
+
+    if (!result || (!result.errors?.length && !result.warnings?.length && !result.stats)) {
+        el.innerHTML = '';
+        return;
+    }
+
+    let html = '<div class="validation-box">';
+
+    if (result.errors && result.errors.length) {
+        html += `<div class="validation-section validation-errors"><strong>Errors</strong><ul>${result.errors.map(e => `<li>${e}</li>`).join('')}</ul></div>`;
+    }
+
+    if (result.warnings && result.warnings.length) {
+        html += `<div class="validation-section validation-warnings"><strong>Warnings</strong><ul>${result.warnings.map(w => `<li>${w}</li>`).join('')}</ul></div>`;
+    }
+
+    if (result.stats) {
+        html += '<div class="validation-section validation-stats"><strong>File Stats</strong><div class="stats-groups">';
+
+        if (result.stats.wheel_replacement) {
+            const s = result.stats.wheel_replacement;
+            html += '<div class="stats-group"><div class="stats-group-title">Wheel Replacement</div><div class="stats-tags">';
+            if (s.total_rows !== undefined) html += `<span class="stat-tag">${s.total_rows} rows</span>`;
+            if (s.date_range) html += `<span class="stat-tag">${s.date_range.min} → ${s.date_range.max}</span>`;
+            if (s.cranes) html += `<span class="stat-tag">Cranes: ${s.cranes.join(', ')}</span>`;
+            html += '</div></div>';
+        }
+
+        if (result.stats.rail_hardness) {
+            const s = result.stats.rail_hardness;
+            html += '<div class="stats-group"><div class="stats-group-title">Rail Hardness</div><div class="stats-tags">';
+            if (s.sections !== undefined) html += `<span class="stat-tag">${s.sections} sections</span>`;
+            if (s.north_avg !== undefined) html += `<span class="stat-tag">North avg: ${s.north_avg} HB</span>`;
+            if (s.south_avg !== undefined) html += `<span class="stat-tag">South avg: ${s.south_avg} HB</span>`;
+            html += '</div></div>';
+        }
+
+        if (result.stats.rail_replacement) {
+            const s = result.stats.rail_replacement;
+            html += '<div class="stats-group"><div class="stats-group-title">Rail Replacement</div><div class="stats-tags">';
+            if (s.total_rows !== undefined) html += `<span class="stat-tag">${s.total_rows} rows</span>`;
+            html += '</div></div>';
+        }
+
+        html += '</div></div>';
+    }
+
+    html += '</div>';
+    el.innerHTML = html;
+}
+
+// ============== STATUS & INSIGHTS ==============
+
 async function loadStatus() {
     try {
         const data = await fetchJSON('/api/status');
@@ -144,6 +343,8 @@ function renderKPIs(data) {
     `;
     document.getElementById('statsContainer').innerHTML = html;
 }
+
+// ============== CHARTS ==============
 
 function renderTrendChart(data) {
     destroyChart('failureTrendChart');
@@ -658,11 +859,20 @@ function setupControls() {
 
     if (refreshBtn) {
         refreshBtn.addEventListener('click', () => {
+            refreshBtn.classList.add('spinning');
             refreshBtn.textContent = 'Refreshing...';
             loadDashboard().then(() => {
-                refreshBtn.textContent = 'Refresh Data';
+                refreshBtn.classList.remove('spinning');
+                refreshBtn.innerHTML = `
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                    Refresh Data
+                `;
             }).catch(() => {
-                refreshBtn.textContent = 'Refresh Data';
+                refreshBtn.classList.remove('spinning');
+                refreshBtn.innerHTML = `
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                    Refresh Data
+                `;
             });
         });
     }
@@ -709,8 +919,10 @@ async function loadDashboard() {
     } catch (error) {
         console.error('Dashboard load error:', error);
         showError('statsContainer', 'Error loading dashboard. Ensure the Flask server is running.');
+        showToast('Error loading dashboard data', 'error');
     }
 }
 
+setupUpload();
 setupControls();
 loadDashboard();
