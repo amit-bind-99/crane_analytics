@@ -32,4 +32,4 @@ USER appuser
 EXPOSE 5000
 
 # Gunicorn: 2 workers, bind to $PORT (Railway injects this at runtime)
-CMD gunicorn --bind "0.0.0.0:${PORT:-5000}" --workers 2 --timeout 120 app:app
+CMD ["sh", "-c", "exec gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 2 --timeout 120 app:app"]
