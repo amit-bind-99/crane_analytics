@@ -1,11 +1,14 @@
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, send_file
 import pandas as pd
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.metrics import r2_score
+from werkzeug.utils import secure_filename
 import warnings
 import os
+import re
+import io
 from datetime import datetime, timedelta
 import json
 
@@ -13,63 +16,76 @@ warnings.filterwarnings('ignore')
 
 app = Flask(__name__)
 
-DATA_PATH = os.path.join('data', 'LT Wheel replacement data.xlsx')
+DATA_DIR = 'data'
+DATA_PATH = os.path.join(DATA_DIR, 'LT Wheel replacement data.xlsx')
+SAMPLE_FILENAME = 'LT Wheel replacement data.xlsx'
+ALLOWED_EXTENSIONS = {'xlsx', 'xls'}
+
+# ============== CONFIGURATION ==============
+
+REQUIRED_WHEEL_COLUMNS = {'Date', 'Crane', 'Equipment', 'Remarks'}
+OPTIONAL_WHEEL_COLUMNS = {'S.no.', 'Job Description', 'Position'}
+VALID_POSITIONS = {'SW', 'SE', 'NE', 'NW'}
+VALID_CRANE_KEYWORDS = ['west', 'east']
 
 # ============== MOCK DATA GENERATORS ==============
 
 def generate_mock_wheel_data():
-    """Generate realistic wheel replacement mock data"""
+    """Generate realistic wheel replacement mock data in the new Excel format."""
     np.random.seed(42)
-    cranes = ['LT WEST', 'LT EAST']
+    cranes = ['YZ bay west crane', 'YZ bay East crane']
     positions = ['SW', 'NE', 'NW', 'SE']
-    remarks = [
-        'Wheel damaged',
-        'Flange worn out',
-        'Bearing failure',
-        'Tread wear beyond limit',
-        'Crack detected',
-        'Scheduled replacement',
-        'Hot axle reported'
+    wheel_types = ['drive wheel', 'idle wheel']
+    remarks_list = [
+        'Shutdown job',
+        'Breakdown job',
+        'Planned maintenance',
+        'Inspection replacement'
     ]
 
     data = []
     start_date = datetime(2024, 1, 1)
     end_date = datetime(2025, 9, 30)
 
-    # 87 replacement events
     for i in range(87):
         crane = np.random.choice(cranes, p=[0.58, 0.42])
         pos = np.random.choice(positions)
-        num = np.random.randint(1, 6)
-        equipment = f"{crane}-{num:02d} {pos}"
+        wheel_type = np.random.choice(wheel_types)
+        equipment = f"LT {pos} {wheel_type}"
 
-        # Bias failures toward later months and high-hardness period
         days_offset = int(np.random.beta(2, 1.2) * (end_date - start_date).days)
         date = start_date + timedelta(days=days_offset)
 
+        remark = np.random.choice(remarks_list)
+        job_desc = (
+            f"{crane} LT {pos} {wheel_type} replacement done. "
+            f"(Wheel collar {'reduced' if remark == 'Shutdown job' else 'broken'})"
+        )
+
         data.append({
+            'S.no.': i + 1,
             'Date': date,
             'Crane': crane,
             'Equipment': equipment,
-            'Position': pos,
-            'Remarks': np.random.choice(remarks)
+            'Job Description': job_desc,
+            'Remarks': remark
         })
 
     df = pd.DataFrame(data)
     df = df.sort_values('Date').reset_index(drop=True)
+    df['S.no.'] = range(1, len(df) + 1)
     return df
 
 def generate_mock_hardness_data():
     """Generate realistic rail hardness data"""
     np.random.seed(7)
-    sections = [f"{a}-{b}" for a, b in zip(range(21, 33), range(22, 34))]
+    sections = ['21-22', '22-23', '23-24', '24-25', '25-26', '26-27',
+                '27-28', '28-29', '29-30', '30-31', '31-32', 'End portion 32-33']
 
-    # North side: mostly high, some critical
-    north = [312, 298, 355, 389, 422, 466, 445, 401, 378, 356, 334, 318]
+    north = [270, 270, 330, 466, 374, 412, 420, 380, 380, 360, 320, 270]
     north = [h + np.random.randint(-8, 9) for h in north]
 
-    # South side: slightly lower but still concerning
-    south = [305, 288, 342, 378, 410, 438, 415, 389, 365, 344, 322, 298]
+    south = [270, 270, 330, 395, 390, 370, 380, 400, 355, 380, 360, 270]
     south = [h + np.random.randint(-7, 8) for h in south]
 
     return pd.DataFrame({
@@ -79,57 +95,55 @@ def generate_mock_hardness_data():
     })
 
 def generate_mock_rail_replacement_data():
-    """Generate rail replacement log"""
+    """Generate rail replacement log in the new Excel format."""
     data = [
-        {'Date': '2025-07-12', 'Section': '24-25 to 27-28', 'Side': 'North', 'Qty_Pieces': 8, 'Reason': 'Excessive hardness & cracks'},
-        {'Date': '2025-07-18', 'Section': '25-26 to 28-29', 'Side': 'South', 'Qty_Pieces': 6, 'Reason': 'High hardness, flange wear'},
-        {'Date': '2025-08-02', 'Section': '29-30 to 32-33', 'Side': 'North', 'Qty_Pieces': 5, 'Reason': 'Crack propagation'},
-        {'Date': '2025-08-15', 'Section': '27-28 to 30-31', 'Side': 'South', 'Qty_Pieces': 4, 'Reason': 'Periodic replacement'},
-        {'Date': '2025-08-22', 'Section': '23-24 to 25-26', 'Side': 'Both', 'Qty_Pieces': 7, 'Reason': 'Preventive replacement'},
+        {
+            'S.no.': 1,
+            'Date': '29.07.2025',
+            'Crane': 'YZ bay LT rail',
+            'Notification no.': '1600543389 / 1600700448',
+            'Equipment': 'YZ bay LT Rail',
+            'Job Description': 'YZ bay LT 6 nos. of Rail pieces replacement done. (12 m each) (Column no. 29 to 31)',
+            'Remarks': 'Shutdown job'
+        },
+        {
+            'S.no.': 2,
+            'Date': '29.07.2025',
+            'Crane': 'YZ bay LT rail joint',
+            'Notification no.': '1600543390 / 1600700449',
+            'Equipment': 'YZ bay LT rail joint Thermit welding',
+            'Job Description': 'YZ bay LT rail joints (4 nos.) Thermit welding done. (Column no. 29 to 31)',
+            'Remarks': 'Shutdown job'
+        },
+        {
+            'S.no.': 3,
+            'Date': '30.07.2025',
+            'Crane': 'YZ bay LT rail',
+            'Notification no.': '1600543391 / 1600700540',
+            'Equipment': 'YZ bay LT Rail',
+            'Job Description': 'YZ bay LT 6 nos. of Rail pieces replacement done. (12 m each) (Column no. 26 to 29)',
+            'Remarks': 'Shutdown job'
+        },
+        {
+            'S.no.': 4,
+            'Date': '30.07.2025',
+            'Crane': 'YZ bay LT rail joint',
+            'Notification no.': '1600543392 / 1600700541',
+            'Equipment': 'YZ bay LT rail joint Thermit welding',
+            'Job Description': 'YZ bay LT rail joints (4 nos.) Thermit welding done. (Column no. 26 to 29)',
+            'Remarks': 'Shutdown job'
+        },
+        {
+            'S.no.': 5,
+            'Date': '31.07.2025',
+            'Crane': 'YZ bay LT rail',
+            'Notification no.': '1600543394 / 1600700543',
+            'Equipment': 'YZ bay LT Rail',
+            'Job Description': 'YZ bay LT 6 nos. of Rail pieces replacement done. (12 m each) (Column no. 23 to 26)',
+            'Remarks': 'Shutdown job'
+        }
     ]
     return pd.DataFrame(data)
-
-# ============== DATA LOADER ==============
-
-def load_data():
-    """Try loading Excel; fall back to mock data if missing or corrupt"""
-    if os.path.exists(DATA_PATH):
-        try:
-            xls = pd.ExcelFile(DATA_PATH)
-            sheets = xls.sheet_names
-
-            # Wheel replacement
-            if 'LT wheel replacement data' in sheets:
-                df_wheels = pd.read_excel(DATA_PATH, sheet_name='LT wheel replacement data')
-            else:
-                df_wheels = generate_mock_wheel_data()
-
-            # Hardness data
-            if 'Rail Hardness data' in sheets:
-                df_hardness_raw = pd.read_excel(DATA_PATH, sheet_name='Rail Hardness data', skiprows=1)
-                try:
-                    sections = df_hardness_raw.columns[2:14].astype(str).tolist()
-                    north = df_hardness_raw.iloc[0, 2:14].values
-                    south = df_hardness_raw.iloc[1, 2:14].values
-                    df_hardness = pd.DataFrame({'Section': sections, 'North': north, 'South': south})
-                except Exception:
-                    df_hardness = generate_mock_hardness_data()
-            else:
-                df_hardness = generate_mock_hardness_data()
-
-            # Rail replacement
-            if 'Rail Replacement data' in sheets:
-                df_rail = pd.read_excel(DATA_PATH, sheet_name='Rail Replacement data')
-            else:
-                df_rail = generate_mock_rail_replacement_data()
-
-            return df_wheels, df_hardness, df_rail, True
-        except Exception as e:
-            print(f"Error loading Excel: {e}. Using mock data.")
-
-    return generate_mock_wheel_data(), generate_mock_hardness_data(), generate_mock_rail_replacement_data(), False
-
-df_wheels, df_hardness, df_rail_replacement, using_real_data = load_data()
 
 # ============== HELPERS ==============
 
@@ -149,10 +163,423 @@ def get_risk_class(hb):
         return 'Medium'
     return 'Normal'
 
-def ensure_date_column(df):
+def normalize_crane(crane):
+    """Normalize crane names to LT WEST / LT EAST."""
+    if pd.isna(crane):
+        return 'UNKNOWN'
+    c = str(crane).lower()
+    if 'west' in c:
+        return 'LT WEST'
+    if 'east' in c:
+        return 'LT EAST'
+    return str(crane).strip()
+
+def extract_position(row):
+    """Extract wheel position (SW/SE/NE/NW) from Equipment or Job Description."""
+    for col in ['Equipment', 'Job Description']:
+        if col in row and pd.notna(row[col]):
+            text = str(row[col]).upper()
+            for pos in VALID_POSITIONS:
+                if re.search(r'\b' + pos + r'\b', text):
+                    return pos
+    return 'Other'
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+# ============== RAIL REPLACEMENT PARSERS ==============
+
+def extract_rail_qty(job_description):
+    """Extract quantity like '6 nos.' from job description."""
+    if pd.isna(job_description):
+        return 0
+    text = str(job_description)
+    # Look for patterns like '6 nos.', '4 nos.', '2 no.'
+    match = re.search(r'(\d+)\s*no\.?', text, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+    return 0
+
+def extract_rail_section(job_description):
+    """Extract section range like 'Column no. 29 to 31' from job description."""
+    if pd.isna(job_description):
+        return 'Unknown'
+    text = str(job_description)
+    match = re.search(r'Column no\.\s*(\d+)\s*to\s*(\d+)', text, re.IGNORECASE)
+    if match:
+        start, end = match.group(1), match.group(2)
+        return f"Column {start} to {end}"
+    match = re.search(r'Column no\.\s*(\d+)', text, re.IGNORECASE)
+    if match:
+        return f"Column {match.group(1)}"
+    return 'Unknown'
+
+def extract_rail_reason(equipment, job_description):
+    """Derive reason from equipment or job description."""
+    text = ' '.join([str(equipment), str(job_description)]).lower()
+    if 'thermit' in text or 'welding' in text:
+        return 'Thermit welding'
+    if 'replacement' in text:
+        return 'Rail pieces replacement'
+    if 'crack' in text:
+        return 'Crack repair'
+    return 'Maintenance'
+
+def parse_rail_replacement_dataframe(df_raw):
+    """
+    Normalize rail replacement dataframe to internal format:
+    Date, Section, Side, Qty_Pieces, Reason
+    Supports both old format (Date, Section, Side, Qty_Pieces, Reason)
+    and new format (S.no., Date, Crane, Notification no., Equipment, Job Description, Remarks).
+    """
+    df = df_raw.copy()
+
+    # Old format detection
+    old_cols = {'Date', 'Section', 'Side', 'Qty_Pieces', 'Reason'}
+    if old_cols.issubset(set(df.columns)):
+        df['Date'] = pd.to_datetime(df['Date'], errors='coerce', dayfirst=True)
+        df['Qty_Pieces'] = pd.to_numeric(df['Qty_Pieces'], errors='coerce').fillna(0).astype(int)
+        return df[['Date', 'Section', 'Side', 'Qty_Pieces', 'Reason']]
+
+    # New format
     if 'Date' in df.columns:
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce', dayfirst=True)
+
+    df['Qty_Pieces'] = df.apply(lambda r: extract_rail_qty(r.get('Job Description')), axis=1)
+    df['Section'] = df.apply(lambda r: extract_rail_section(r.get('Job Description')), axis=1)
+    df['Reason'] = df.apply(lambda r: extract_rail_reason(r.get('Equipment'), r.get('Job Description')), axis=1)
+
+    # Side is not explicitly provided in the new format; default to Both
+    df['Side'] = 'Both'
+
+    return df[['Date', 'Section', 'Side', 'Qty_Pieces', 'Reason']]
+
+# ============== VALIDATION ==============
+
+def validate_wheel_dataframe(df, source_name='uploaded file'):
+    """
+    Lenient validation: only fail if the sheet is completely empty.
+    Everything else becomes a warning.
+    """
+    errors = []
+    warnings_list = []
+    stats = {}
+
+    if df is None or df.empty:
+        errors.append(f"{source_name} contains no data rows.")
+        return {'valid': False, 'errors': errors, 'warnings': warnings_list, 'stats': stats}
+
+    # Drop fully empty rows silently
+    df = df.dropna(how='all')
+    stats['total_rows'] = len(df)
+
+    columns = set(df.columns)
+
+    # Warn (not error) about missing columns
+    missing_required = REQUIRED_WHEEL_COLUMNS - columns
+    if missing_required:
+        warnings_list.append(f"Missing columns (will use defaults): {', '.join(sorted(missing_required))}.")
+
+    # Date column
+    if 'Date' in columns:
+        df['Date_parsed'] = pd.to_datetime(df['Date'], errors='coerce', dayfirst=True)
+        invalid_dates = df['Date_parsed'].isna().sum()
+        if invalid_dates > 0:
+            warnings_list.append(f"{invalid_dates} row(s) have invalid or missing dates (will be skipped in charts).")
+        valid_dates = df['Date_parsed'].dropna()
+        if not valid_dates.empty:
+            stats['date_range'] = {
+                'min': valid_dates.min().strftime('%Y-%m-%d'),
+                'max': valid_dates.max().strftime('%Y-%m-%d')
+            }
+
+    # Crane column
+    if 'Crane' in columns:
+        unique_cranes = df['Crane'].dropna().astype(str).apply(normalize_crane).unique().tolist()
+        stats['cranes'] = unique_cranes
+
+    # Position extraction (informational only)
+    if 'Equipment' in columns or 'Job Description' in columns:
+        df['Position_extracted'] = df.apply(extract_position, axis=1)
+        stats['positions'] = df['Position_extracted'].value_counts().to_dict()
+
+    return {'valid': True, 'errors': errors, 'warnings': warnings_list, 'stats': stats}
+
+def validate_rail_replacement_dataframe(df, source_name='Rail Replacement data'):
+    """Lenient validation: accept whatever columns are present."""
+    warnings_list = []
+    stats = {}
+
+    if df is None or df.empty:
+        warnings_list.append(f"{source_name} sheet is empty.")
+        return {'valid': True, 'errors': [], 'warnings': warnings_list, 'stats': stats}
+
+    df = df.dropna(how='all')
+    stats['total_rows'] = len(df)
+
+    return {'valid': True, 'errors': [], 'warnings': warnings_list, 'stats': stats}
+def validate_hardness_dataframe(df, source_name='Rail Hardness data'):
+    """Lenient validation: scan flexibly for numeric hardness values regardless of layout."""
+    warnings_list = []
+    stats = {}
+
+    if df is None or df.empty:
+        warnings_list.append(f"{source_name} sheet is empty.")
+        return {'valid': True, 'errors': [], 'warnings': warnings_list, 'stats': stats}
+
+    try:
+        # Actual layout: row 0 = empty, row 1 = section labels, row 2 = north, row 3 = south
+        sections = df.iloc[1, 2:14].astype(str).tolist()
+        north = pd.to_numeric(df.iloc[2, 2:14], errors='coerce')
+        south = pd.to_numeric(df.iloc[3, 2:14], errors='coerce')
+        stats['sections'] = len(sections)
+        north_mean = north.dropna().mean()
+        south_mean = south.dropna().mean()
+        stats['north_avg'] = round(float(north_mean), 1) if not pd.isna(north_mean) else None
+        stats['south_avg'] = round(float(south_mean), 1) if not pd.isna(south_mean) else None
+    except Exception:
+        stats['sections'] = 0
+
+    return {'valid': True, 'errors': [], 'warnings': warnings_list, 'stats': stats}
+
+# ============== SAMPLE EXCEL GENERATOR ==============
+
+def generate_sample_excel():
+    """Generate a sample Excel workbook with data validation for all 3 sheets."""
+    from openpyxl import Workbook
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    wb = Workbook()
+
+    # ---------- Sheet 1: LT wheel replacement data ----------
+    ws1 = wb.active
+    ws1.title = 'LT wheel replacement data'
+
+    headers1 = ['S.no.', 'Date', 'Crane', 'Equipment', 'Job Description', 'Remarks']
+    ws1.append(headers1)
+
+    header_fill = PatternFill(start_color='C6E0B4', end_color='C6E0B4', fill_type='solid')
+    header_font = Font(bold=True, color='000000')
+    for col_num, header in enumerate(headers1, 1):
+        cell = ws1.cell(row=1, column=col_num)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+
+    sample_wheel_rows = [
+        [1, '02.04.2024', 'YZ bay west crane', 'LT SW drive wheel',
+         'YZ bay west crane LT SW drive wheel replacement done. (Wheel collar reduced)', 'Shutdown job'],
+        [2, '02.04.2024', 'YZ bay west crane', 'LT SE drive wheel',
+         'YZ bay west crane LT SE drive wheel replacement done. (Wheel collar reduced)', 'Shutdown job'],
+        [3, '06.04.2024', 'YZ bay East crane', 'LT NE idle wheel',
+         'YZ bay east crane LT NE idle wheel replacement done. (Wheel collar reduced)', 'Shutdown job'],
+        [4, '29.07.2024', 'YZ bay west crane', 'LT NE drive wheel',
+         'YZ bay west crane LT NE drive wheel replacement done. (Wheel collar reduced)', 'Shutdown job'],
+        [5, '03.12.2024', 'YZ bay west crane', 'LT SW idle wheel',
+         'YZ bay west crane LT SW idle wheel replacement done. (Wheel collar reduced)', 'Planned maintenance'],
+        [6, '13.02.2025', 'YZ bay East crane', 'LT NW drive wheel',
+         'YZ bay east crane LT NW drive wheel replacement done. (Wheel collar broken)', 'Breakdown job'],
+    ]
+
+    for row in sample_wheel_rows:
+        ws1.append(row)
+
+    ws1.column_dimensions['A'].width = 8
+    ws1.column_dimensions['B'].width = 14
+    ws1.column_dimensions['C'].width = 20
+    ws1.column_dimensions['D'].width = 22
+    ws1.column_dimensions['E'].width = 65
+    ws1.column_dimensions['F'].width = 20
+
+    crane_validation = DataValidation(
+        type="list",
+        formula1='"YZ bay west crane,YZ bay East crane"',
+        allow_blank=False
+    )
+    crane_validation.error = 'Please select a valid crane from the list.'
+    crane_validation.errorTitle = 'Invalid Crane'
+    crane_validation.prompt = 'Select the crane where the replacement occurred.'
+    crane_validation.promptTitle = 'Crane'
+    ws1.add_data_validation(crane_validation)
+    crane_validation.add('C2:C1000')
+
+    equipment_options = [
+        'LT SW drive wheel', 'LT SW idle wheel',
+        'LT SE drive wheel', 'LT SE idle wheel',
+        'LT NE drive wheel', 'LT NE idle wheel',
+        'LT NW drive wheel', 'LT NW idle wheel'
+    ]
+    equipment_validation = DataValidation(
+        type="list",
+        formula1='"' + ','.join(equipment_options) + '"',
+        allow_blank=False
+    )
+    equipment_validation.error = 'Please select a valid equipment value.'
+    equipment_validation.errorTitle = 'Invalid Equipment'
+    equipment_validation.prompt = 'Select the wheel equipment replaced.'
+    equipment_validation.promptTitle = 'Equipment'
+    ws1.add_data_validation(equipment_validation)
+    equipment_validation.add('D2:D1000')
+
+    remarks_validation = DataValidation(
+        type="list",
+        formula1='"Shutdown job,Breakdown job,Planned maintenance,Inspection replacement"',
+        allow_blank=False
+    )
+    remarks_validation.error = 'Please select a valid remark category.'
+    remarks_validation.errorTitle = 'Invalid Remarks'
+    ws1.add_data_validation(remarks_validation)
+    remarks_validation.add('F2:F1000')
+
+    ws1.freeze_panes = 'A2'
+
+    # ---------- Sheet 2: Rail Hardness data ----------
+    ws2 = wb.create_sheet('Rail Hardness data')
+    ws2.append(['', 'Column no.', '21-22', '22-23', '23-24', '24-25', '25-26',
+                '26-27', '27-28', '28-29', '29-30', '30-31', '31-32', 'End portion 32-33'])
+    ws2.append(['', 'North Side Z bay Rail hardness (HB)',
+                270, 270, 330, 466, 374, 412, 420, 380, 380, 360, 320, 270])
+    ws2.append(['', 'South Side Y bay Rail hardness (HB)',
+                270, 270, 330, 395, 390, 370, 380, 400, 355, 380, 360, 270])
+
+    for row in ws2.iter_rows(min_row=1, max_row=3, min_col=2, max_col=14):
+        for cell in row:
+            cell.alignment = Alignment(horizontal='center', vertical='center')
+            if cell.row == 1:
+                cell.fill = header_fill
+                cell.font = header_font
+
+    # ---------- Sheet 3: Rail Replacement data ----------
+    ws3 = wb.create_sheet('Rail Replacement data')
+    headers3 = ['S.no.', 'Date', 'Crane', 'Notification no.', 'Equipment', 'Job Description', 'Remarks']
+    ws3.append(headers3)
+
+    for col_num, header in enumerate(headers3, 1):
+        cell = ws3.cell(row=1, column=col_num)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+
+    sample_rail_rows = [
+        [1, '29.07.2025', 'YZ bay LT rail', '1600543389 / 1600700448',
+         'YZ bay LT Rail', 'YZ bay LT 6 nos. of Rail pieces replacement done. (12 m each) (Column no. 29 to 31)', 'Shutdown job'],
+        [2, '29.07.2025', 'YZ bay LT rail joint', '1600543390 / 1600700449',
+         'YZ bay LT rail joint Thermit welding', 'YZ bay LT rail joints (4 nos.) Thermit welding done. (Column no. 29 to 31)', 'Shutdown job'],
+        [3, '30.07.2025', 'YZ bay LT rail', '1600543391 / 1600700540',
+         'YZ bay LT Rail', 'YZ bay LT 6 nos. of Rail pieces replacement done. (12 m each) (Column no. 26 to 29)', 'Shutdown job'],
+        [4, '30.07.2025', 'YZ bay LT rail joint', '1600543392 / 1600700541',
+         'YZ bay LT rail joint Thermit welding', 'YZ bay LT rail joints (4 nos.) Thermit welding done. (Column no. 26 to 29)', 'Shutdown job'],
+        [5, '31.07.2025', 'YZ bay LT rail', '1600543394 / 1600700543',
+         'YZ bay LT Rail', 'YZ bay LT 6 nos. of Rail pieces replacement done. (12 m each) (Column no. 23 to 26)', 'Shutdown job'],
+    ]
+
+    for row in sample_rail_rows:
+        ws3.append(row)
+
+    ws3.column_dimensions['A'].width = 8
+    ws3.column_dimensions['B'].width = 14
+    ws3.column_dimensions['C'].width = 22
+    ws3.column_dimensions['D'].width = 26
+    ws3.column_dimensions['E'].width = 32
+    ws3.column_dimensions['F'].width = 72
+    ws3.column_dimensions['G'].width = 18
+
+    ws3.freeze_panes = 'A2'
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
+
+# ============== DATA LOADER ==============
+
+def parse_wheel_dataframe(df_raw):
+    """
+    Normalize a wheel replacement dataframe to internal format:
+    Date, Crane, Equipment, Position, Remarks
+    """
+    df = df_raw.copy()
+
+    # Rename S.no. to a standard name if present
+    if 'S.no.' in df.columns:
+        df = df.rename(columns={'S.no.': 'S_No'})
+
+    # Ensure required columns exist
+    for col in ['Date', 'Crane', 'Equipment', 'Remarks']:
+        if col not in df.columns:
+            df[col] = None
+
+    # Parse dates
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce', dayfirst=True)
+
+    # Normalize crane names
+    df['Crane'] = df['Crane'].apply(normalize_crane)
+
+    # Extract position
+    if 'Position' in df.columns:
+        df['Position'] = df['Position'].fillna(df.apply(extract_position, axis=1))
+    else:
+        df['Position'] = df.apply(extract_position, axis=1)
+
+    # Clean up Position to valid values
+    df['Position'] = df['Position'].apply(
+        lambda x: x if x in VALID_POSITIONS else 'Other'
+    )
+
+    # Ensure remarks are strings
+    df['Remarks'] = df['Remarks'].fillna('').astype(str)
+
     return df
+
+def load_data():
+    """Try loading Excel; fall back to mock data if missing or corrupt."""
+    if os.path.exists(DATA_PATH):
+        try:
+            xls = pd.ExcelFile(DATA_PATH)
+            sheets = xls.sheet_names
+
+            # Wheel replacement
+            if 'LT wheel replacement data' in sheets:
+                df_wheels_raw = pd.read_excel(DATA_PATH, sheet_name='LT wheel replacement data')
+                df_wheels = parse_wheel_dataframe(df_wheels_raw)
+            else:
+                df_wheels = parse_wheel_dataframe(generate_mock_wheel_data())
+
+            # Hardness data
+            if 'Rail Hardness data' in sheets:
+                df_hardness_raw = pd.read_excel(DATA_PATH, sheet_name='Rail Hardness data', header=None)
+                try:
+                    sections = df_hardness_raw.iloc[1, 2:14].astype(str).tolist()
+                    north = pd.to_numeric(df_hardness_raw.iloc[2, 2:14], errors='coerce').values
+                    south = pd.to_numeric(df_hardness_raw.iloc[3, 2:14], errors='coerce').values
+                    df_hardness = pd.DataFrame({'Section': sections, 'North': north, 'South': south})
+                except Exception:
+                    df_hardness = generate_mock_hardness_data()
+            else:
+                df_hardness = generate_mock_hardness_data()
+
+            # Rail replacement
+            if 'Rail Replacement data' in sheets:
+                df_rail_raw = pd.read_excel(DATA_PATH, sheet_name='Rail Replacement data')
+                df_rail = parse_rail_replacement_dataframe(df_rail_raw)
+            else:
+                df_rail = parse_rail_replacement_dataframe(generate_mock_rail_replacement_data())
+
+            return df_wheels, df_hardness, df_rail, True
+        except Exception as e:
+            print(f"Error loading Excel: {e}. Using mock data.")
+
+    df_wheels = parse_wheel_dataframe(generate_mock_wheel_data())
+    return df_wheels, generate_mock_hardness_data(), parse_rail_replacement_dataframe(generate_mock_rail_replacement_data()), False
+
+def reload_data():
+    """Reload global data after upload."""
+    global df_wheels, df_hardness, df_rail_replacement, using_real_data
+    df_wheels, df_hardness, df_rail_replacement, using_real_data = load_data()
+
+# Load data at startup
+df_wheels, df_hardness, df_rail_replacement, using_real_data = load_data()
 
 # ============== ROUTES ==============
 
@@ -170,9 +597,130 @@ def status():
         'hardness_sections': len(df_hardness)
     })
 
+@app.route('/api/sample')
+def download_sample():
+    """Download a sample Excel file with data validation."""
+    output = generate_sample_excel()
+    return send_file(
+        output,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=SAMPLE_FILENAME
+    )
+
+@app.route('/api/upload', methods=['POST'])
+def upload_file():
+    """Handle Excel file upload with in-memory validation for all 3 sheets."""
+    if 'file' not in request.files:
+        return jsonify({'success': False, 'errors': ['No file part in the request.'], 'warnings': []}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'success': False, 'errors': ['No file selected.'], 'warnings': []}), 400
+
+    if not allowed_file(file.filename):
+        return jsonify({
+            'success': False,
+            'errors': [f"Invalid file type. Allowed types: {', '.join(ALLOWED_EXTENSIONS)}."],
+            'warnings': []
+        }), 400
+
+    try:
+        # Read file into memory so pandas doesn't lock the destination file on Windows
+        file_bytes = io.BytesIO(file.read())
+
+        # Try to read workbook
+        try:
+            xls = pd.ExcelFile(file_bytes)
+            sheets = xls.sheet_names
+        except Exception as e:
+            return jsonify({
+                'success': False,
+                'errors': [f"Could not read Excel file: {str(e)}"],
+                'warnings': []
+            }), 400
+
+        if 'LT wheel replacement data' not in sheets:
+            return jsonify({
+                'success': False,
+                'errors': ["Sheet 'LT wheel replacement data' not found. Please use the sample file format."],
+                'warnings': []
+            }), 400
+
+        all_errors = []
+        all_warnings = []
+        all_stats = {}
+
+        # Validate wheel replacement sheet (required)
+        df_wheels_raw = pd.read_excel(file_bytes, sheet_name='LT wheel replacement data')
+        wheel_validation = validate_wheel_dataframe(df_wheels_raw)
+        all_errors.extend(wheel_validation['errors'])
+        all_warnings.extend(wheel_validation['warnings'])
+        all_stats['wheel_replacement'] = wheel_validation['stats']
+
+        # Validate rail hardness sheet (optional)
+        if 'Rail Hardness data' in sheets:
+            try:
+                file_bytes.seek(0)
+                df_hardness_raw = pd.read_excel(file_bytes, sheet_name='Rail Hardness data', header=None)
+                hardness_validation = validate_hardness_dataframe(df_hardness_raw)
+                all_errors.extend(hardness_validation['errors'])
+                all_warnings.extend(hardness_validation['warnings'])
+                all_stats['rail_hardness'] = hardness_validation['stats']
+            except Exception as e:
+                all_warnings.append(f"Could not validate Rail Hardness data: {str(e)}")
+
+        # Validate rail replacement sheet (optional)
+        if 'Rail Replacement data' in sheets:
+            try:
+                file_bytes.seek(0)
+                df_rail_raw = pd.read_excel(file_bytes, sheet_name='Rail Replacement data')
+                rail_validation = validate_rail_replacement_dataframe(df_rail_raw)
+                all_errors.extend(rail_validation['errors'])
+                all_warnings.extend(rail_validation['warnings'])
+                all_stats['rail_replacement'] = rail_validation['stats']
+            except Exception as e:
+                all_warnings.append(f"Could not validate Rail Replacement data: {str(e)}")
+
+        # Only block on truly fatal errors (empty wheel sheet)
+        fatal_errors = [e for e in all_errors if 'no data rows' in e.lower()]
+        if fatal_errors:
+            return jsonify({
+                'success': False,
+                'errors': fatal_errors,
+                'warnings': all_warnings,
+                'stats': all_stats
+            }), 400
+
+        # Save validated file to disk
+        os.makedirs(DATA_DIR, exist_ok=True)
+        file_bytes.seek(0)
+        with open(DATA_PATH, 'wb') as f:
+            f.write(file_bytes.read())
+
+        # Reload global data
+        reload_data()
+
+        return jsonify({
+            'success': True,
+            'errors': [],
+            'warnings': all_warnings,
+            'stats': all_stats,
+            'using_real_data': using_real_data,
+            'total_wheel_records': len(df_wheels)
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'errors': [f"Upload failed: {str(e)}"],
+            'warnings': []
+        }), 500
+
 @app.route('/api/summary')
 def get_summary():
-    df = ensure_date_column(df_wheels.copy())
+    df = df_wheels.copy()
+    df = df.dropna(subset=['Date'])
 
     total_replacements = len(df)
     west_count = int(df[df['Crane'].astype(str).str.contains('west', case=False, na=False)].shape[0])
@@ -195,7 +743,6 @@ def get_summary():
     above_300_north = sum(1 for h in north_vals if h > 300)
     above_300_south = sum(1 for h in south_vals if h > 300)
 
-    # Failure by month/year
     df['Year'] = df['Date'].dt.year
     yearly = df.groupby('Year').size().to_dict()
 
@@ -277,12 +824,11 @@ def hardness_correlation():
 
 @app.route('/api/wheel-failure-analysis')
 def wheel_failure_analysis():
-    df = ensure_date_column(df_wheels.copy())
+    df = df_wheels.copy()
+    df = df.dropna(subset=['Date'])
 
-    # Equipment failures
     equipment_counts = df['Equipment'].value_counts().head(10).to_dict()
 
-    # Position failures
     if 'Position' in df.columns:
         positions = df['Position'].fillna('Other').tolist()
     else:
@@ -297,10 +843,8 @@ def wheel_failure_analysis():
 
     position_counts = pd.Series(positions).value_counts().to_dict()
 
-    # Remarks / job types
     job_counts = df['Remarks'].value_counts().head(8).to_dict()
 
-    # Monthly totals
     df['Month'] = df['Date'].dt.to_period('M')
     monthly = df.groupby('Month').size().to_dict()
 
@@ -313,28 +857,25 @@ def wheel_failure_analysis():
 
 @app.route('/api/failure-distribution')
 def failure_distribution():
-    df = ensure_date_column(df_wheels.copy())
+    df = df_wheels.copy()
+    df = df.dropna(subset=['Date'])
 
-    # By crane
     crane_counts = df['Crane'].value_counts().to_dict()
 
-    # By quarter
     df['Quarter'] = df['Date'].dt.to_period('Q')
     quarterly = df.groupby('Quarter').size().to_dict()
 
-    # By day of week
     df['DayOfWeek'] = df['Date'].dt.day_name()
     dow = df['DayOfWeek'].value_counts().to_dict()
 
-    # Failure severity simulation based on remarks keywords
     severity = {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0}
     for remark in df['Remarks'].astype(str):
         r = remark.lower()
-        if any(x in r for x in ['crack', 'hot axle', 'bearing failure']):
+        if any(x in r for x in ['crack', 'hot axle', 'bearing failure', 'breakdown']):
             severity['Critical'] += 1
-        elif any(x in r for x in ['damaged', 'worn out']):
+        elif any(x in r for x in ['damaged', 'worn out', 'broken']):
             severity['High'] += 1
-        elif any(x in r for x in ['wear', 'limit']):
+        elif any(x in r for x in ['wear', 'limit', 'reduced']):
             severity['Medium'] += 1
         else:
             severity['Low'] += 1
@@ -363,13 +904,12 @@ def rail_replacement():
 
 @app.route('/api/predict/<int:months_ahead>')
 def predict_failures(months_ahead):
-    df = ensure_date_column(df_wheels.copy())
+    df = df_wheels.copy()
     df = df.dropna(subset=['Date'])
 
     if len(df) < 2:
         return jsonify({'error': 'Insufficient data'})
 
-    # Cumulative failures over days
     df['Days'] = (df['Date'] - df['Date'].min()).dt.days
     time_series = df.groupby('Days').size().cumsum().reset_index()
     time_series.columns = ['Days', 'Cumulative_Failures']
@@ -377,11 +917,9 @@ def predict_failures(months_ahead):
     X = time_series['Days'].values.reshape(-1, 1)
     y = time_series['Cumulative_Failures'].values
 
-    # Linear model
     lin_model = LinearRegression()
     lin_model.fit(X, y)
 
-    # Polynomial model (degree 2)
     poly = PolynomialFeatures(degree=2)
     X_poly = poly.fit_transform(X)
     poly_model = LinearRegression()
@@ -393,14 +931,12 @@ def predict_failures(months_ahead):
     future_linear = lin_model.predict(np.array(future_days).reshape(-1, 1))
     future_poly = poly_model.predict(poly.transform(np.array(future_days).reshape(-1, 1)))
 
-    # Hardness risk factor
     all_hb = []
     for col in ['North', 'South']:
         all_hb.extend([float(v) for v in df_hardness[col].values if pd.notna(v)])
     avg_hb = float(np.mean(all_hb)) if all_hb else 300
     hardness_risk = max(0, (avg_hb - 300) / 100)
 
-    # Adjusted predictions
     adjusted_linear = future_linear * (1 + hardness_risk)
     adjusted_poly = np.maximum.accumulate(future_poly * (1 + hardness_risk))
 
@@ -409,7 +945,6 @@ def predict_failures(months_ahead):
     pred_6mo = int(adjusted_poly[5] - current_failures) if months_ahead >= 6 else 0
     monthly_rate = (adjusted_poly[-1] - current_failures) / months_ahead
 
-    # Recommendation
     if avg_hb > 400:
         recommendation = 'URGENT: Critical hardness levels - immediate rail replacement required'
     elif avg_hb > 350:
@@ -441,7 +976,7 @@ def predict_failures(months_ahead):
 @app.route('/api/scatter-hardness-failures')
 def scatter_hardness_failures():
     """Simulated correlation: hardness vs failure count by section"""
-    df = ensure_date_column(df_wheels.copy())
+    df = df_wheels.copy()
     points = []
     for _, row in df_hardness.iterrows():
         section = str(row['Section'])
@@ -449,7 +984,6 @@ def scatter_hardness_failures():
         south_hb = safe_float(row['South']) or 300
         avg_hb = (north_hb + south_hb) / 2
 
-        # Simulated failures scale with hardness
         base_failures = max(0, (avg_hb - 280) / 10 + np.random.normal(0, 1))
         points.append({
             'section': section,
