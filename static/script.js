@@ -28,9 +28,11 @@ const PALETTE = [
     COLORS.slate
 ];
 
-Chart.defaults.font.family = "'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
-Chart.defaults.color = '#475569';
-Chart.defaults.scale.grid.color = '#e2e8f0';
+if (typeof Chart !== 'undefined') {
+    Chart.defaults.font.family = "'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
+    Chart.defaults.color = '#475569';
+    Chart.defaults.scale.grid.color = '#e2e8f0';
+}
 
 function destroyChart(id) {
     if (charts[id]) {

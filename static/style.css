@@ -139,6 +139,8 @@ h1 {
     font-size: 13px;
     font-weight: 700;
     cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
     transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
     display: inline-flex;
     align-items: center;
