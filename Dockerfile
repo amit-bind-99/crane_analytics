@@ -30,7 +30,7 @@ RUN addgroup --system appgroup && adduser --system --ingroup appgroup appuser &&
     chown -R appuser:appgroup /app/data
 USER appuser
 
-EXPOSE 5000
+EXPOSE 8080
 
-# Gunicorn: 2 workers, bind to $PORT (Railway injects this at runtime)
-CMD ["sh", "-c", "exec gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 2 --timeout 120 app:app"]
+# Streamlit: bind to $PORT (Railway injects this at runtime)
+CMD ["sh", "-c", "exec streamlit run streamlit_app.py --server.port=${PORT:-8080} --server.address=0.0.0.0 --server.headless=true"]
