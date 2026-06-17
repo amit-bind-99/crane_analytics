@@ -32,6 +32,208 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ─────────────────────── THEME / STYLING ───────────────────────
+
+import plotly.io as pio
+
+# Shared Plotly styling so every chart matches the brand palette
+BRAND_SEQUENCE = [
+    "#2563eb", "#7c3aed", "#ec4899", "#06b6d4",
+    "#f59e0b", "#10b981", "#f43f5e", "#14b8a6",
+]
+
+# Register a branded template and make it the default for ALL charts
+_yz_template = go.layout.Template()
+_yz_template.layout = go.Layout(
+    font=dict(family="'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+              color="#334155", size=13),
+    colorway=BRAND_SEQUENCE,
+    paper_bgcolor="rgba(0,0,0,0)",
+    plot_bgcolor="rgba(0,0,0,0)",
+    title=dict(font=dict(color="#0f172a", size=16)),
+    hoverlabel=dict(font_size=13, font_family="Inter"),
+    xaxis=dict(showgrid=False, linecolor="#e2e8f0", zeroline=False),
+    yaxis=dict(gridcolor="#eef2f7", zeroline=False, linecolor="#e2e8f0"),
+    margin=dict(t=30, b=10, l=10, r=10),
+)
+pio.templates["yzbay"] = _yz_template
+pio.templates.default = "plotly_white+yzbay"
+px.defaults.template = "plotly_white+yzbay"
+px.defaults.color_discrete_sequence = BRAND_SEQUENCE
+
+
+def inject_css():
+    """Inject custom CSS to match the original HTML/CSS look & feel."""
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+        html, body, [class*="css"], .stApp, .stMarkdown, button, input, select, textarea {
+            font-family: 'Inter', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
+        }
+
+        .stApp { background: #f8fafc; }
+
+        /* Constrain content width and add breathing room */
+        .block-container {
+            max-width: 1500px;
+            padding-top: 1.5rem;
+            padding-bottom: 2.5rem;
+        }
+
+        /* ===== Hero header banner ===== */
+        .yz-hero {
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
+            border-radius: 24px;
+            padding: 30px 34px;
+            margin-bottom: 26px;
+            box-shadow: 0 20px 40px rgba(15, 23, 42, 0.22);
+            color: #fff;
+            position: relative;
+            overflow: hidden;
+        }
+        .yz-hero::before {
+            content: '';
+            position: absolute;
+            top: -50%; right: -10%;
+            width: 480px; height: 480px;
+            background: radial-gradient(circle, rgba(255,255,255,0.08) 0%, transparent 70%);
+            pointer-events: none;
+        }
+        .yz-hero .eyebrow {
+            font-size: 12px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 1.5px; opacity: 0.75; margin-bottom: 6px;
+        }
+        .yz-hero h1 {
+            font-size: 30px; font-weight: 800; margin: 0 0 6px 0;
+            letter-spacing: -0.6px; color: #fff;
+        }
+        .yz-hero p.sub {
+            font-size: 14.5px; opacity: 0.85; margin: 0; max-width: 640px;
+        }
+        .yz-badge {
+            display: inline-block; margin-top: 14px;
+            border-radius: 50px; padding: 7px 16px;
+            font-size: 11.5px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: 0.8px; backdrop-filter: blur(8px);
+        }
+        .yz-badge.real { background: rgba(16,185,129,0.25); border: 1px solid rgba(16,185,129,0.45); }
+        .yz-badge.mock { background: rgba(245,158,11,0.25); border: 1px solid rgba(245,158,11,0.45); }
+
+        /* ===== KPI metric cards ===== */
+        div[data-testid="stMetric"] {
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 18px 20px;
+            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+        div[data-testid="stMetric"]:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 12px 26px rgba(15, 23, 42, 0.10);
+        }
+        div[data-testid="stMetricLabel"] p {
+            font-size: 12px !important; font-weight: 700 !important;
+            text-transform: uppercase; letter-spacing: 0.6px; color: #64748b !important;
+        }
+        div[data-testid="stMetricValue"] {
+            font-size: 30px !important; font-weight: 800 !important; color: #0f172a !important;
+        }
+
+        /* ===== Section subheaders ===== */
+        h2, h3 { color: #0f172a; font-weight: 800 !important; letter-spacing: -0.3px; }
+
+        /* ===== Buttons ===== */
+        .stButton > button, .stDownloadButton > button {
+            border-radius: 10px;
+            font-weight: 700;
+            border: 1px solid #e2e8f0;
+            transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+        .stButton > button:hover, .stDownloadButton > button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 18px rgba(37, 99, 235, 0.18);
+        }
+        .stButton > button[kind="primary"], .stFormSubmitButton > button {
+            background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+            border: 0; color: #fff;
+        }
+
+        /* ===== Sidebar ===== */
+        section[data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+        }
+        section[data-testid="stSidebar"] * { color: #e2e8f0; }
+        section[data-testid="stSidebar"] h3 { color: #fff !important; }
+        section[data-testid="stSidebar"] .stRadio label { color: #cbd5e1 !important; }
+        section[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.12); }
+
+        /* Sidebar nav radio -> looks like menu items */
+        section[data-testid="stSidebar"] div[role="radiogroup"] label {
+            padding: 9px 12px; border-radius: 10px; margin-bottom: 2px;
+            transition: background 0.15s ease;
+        }
+        section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
+            background: rgba(255,255,255,0.08);
+        }
+
+        /* ===== Cards for charts (dataframes / plotly) ===== */
+        div[data-testid="stPlotlyChart"], div[data-testid="stDataFrame"] {
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 16px;
+            padding: 12px;
+            box-shadow: 0 4px 14px rgba(15, 23, 42, 0.05);
+        }
+
+        /* ===== Login card wrapper ===== */
+        .yz-login-head {
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 100%);
+            border-radius: 20px 20px 0 0;
+            padding: 32px; text-align: center; color: #fff;
+            margin-bottom: -8px;
+        }
+        .yz-login-head .logo {
+            width: 60px; height: 60px; margin: 0 auto 14px;
+            background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 16px; display: flex; align-items: center;
+            justify-content: center; font-size: 30px;
+        }
+        .yz-login-head h1 { font-size: 23px; font-weight: 800; margin: 0 0 6px 0; color:#fff; }
+        .yz-login-head p { font-size: 13px; opacity: 0.82; margin: 0; }
+
+        /* Hide default Streamlit chrome */
+        #MainMenu { visibility: hidden; }
+        footer { visibility: hidden; }
+        header[data-testid="stHeader"] { background: transparent; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def hero(title, subtitle, badge=None):
+    """Render the branded gradient hero header."""
+    badge_html = ""
+    if badge == "real":
+        badge_html = '<span class="yz-badge real">● Live Data</span>'
+    elif badge == "mock":
+        badge_html = '<span class="yz-badge mock">● Demo Data</span>'
+    st.markdown(
+        f"""
+        <div class="yz-hero">
+            <div class="eyebrow">YZ Bay Predictive Maintenance</div>
+            <h1>{title}</h1>
+            <p class="sub">{subtitle}</p>
+            {badge_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ─────────────────────── DATABASE ───────────────────────
 
 def get_db_connection():
@@ -413,13 +615,21 @@ def generate_sample_excel():
 # ─────────────────────── LOGIN PAGE ───────────────────────
 
 def show_login():
-    col1, col2, col3 = st.columns([1, 2, 1])
+    col1, col2, col3 = st.columns([1, 1.3, 1])
     with col2:
-        st.markdown("## 🏗️ YZ Bay Crane Analytics")
-        st.markdown("*Predictive maintenance dashboard for crane LT wheel failure reduction*")
-        st.divider()
+        st.markdown(
+            """
+            <div class="yz-login-head">
+                <div class="logo">🏗️</div>
+                <h1>YZ Bay Crane Analytics</h1>
+                <p>Predictive maintenance dashboard for crane LT wheel failure reduction</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         with st.form("login_form"):
-            st.subheader("Sign In")
+            st.subheader("Welcome back")
+            st.caption("Please sign in to continue")
             username = st.text_input("Username", placeholder="Enter your username")
             password = st.text_input("Password", type="password", placeholder="Enter your password")
             submitted = st.form_submit_button("Sign In", use_container_width=True, type="primary")
@@ -448,7 +658,9 @@ def show_login():
 # ─────────────────────── DASHBOARD ───────────────────────
 
 def show_dashboard(df_wheels, df_hardness, df_rail, using_real_data):
-    st.title("🏗️ YZ Bay — Crane LT Wheel Failure Dashboard")
+    hero("Crane LT Wheel Failure Reduction",
+         "Rail hardness analysis, failure pattern detection, and predictive maintenance recommendations",
+         badge="real" if using_real_data else "mock")
     if not using_real_data:
         st.info("ℹ️ Displaying demo data. Upload your Excel file in **Upload Data** to see real analytics.")
 
@@ -521,7 +733,8 @@ def show_dashboard(df_wheels, df_hardness, df_rail, using_real_data):
 # ─────────────────────── HARDNESS ANALYSIS ───────────────────────
 
 def show_hardness(df_hardness):
-    st.title("🔬 Rail Hardness Analysis")
+    hero("Rail Hardness Analysis",
+         "Section-by-section hardness mapping with risk classification and recommended actions")
 
     risk_data = []
     for _, row in df_hardness.iterrows():
@@ -594,7 +807,8 @@ def show_hardness(df_hardness):
 # ─────────────────────── WHEEL FAILURE ANALYSIS ───────────────────────
 
 def show_wheel_failure(df_wheels):
-    st.title("⚙️ Wheel Failure Analysis")
+    hero("Wheel Failure Analysis",
+         "Breakdown of wheel replacements by equipment, position, remark type and time")
     df = df_wheels.dropna(subset=["Date"]).copy()
 
     col1, col2 = st.columns(2)
@@ -642,7 +856,8 @@ def show_wheel_failure(df_wheels):
 # ─────────────────────── FAILURE DISTRIBUTION ───────────────────────
 
 def show_failure_distribution(df_wheels):
-    st.title("📊 Failure Distribution")
+    hero("Failure Distribution",
+         "How failures are distributed across cranes, quarters, days of the week and severity")
     df = df_wheels.dropna(subset=["Date"]).copy()
 
     col1, col2 = st.columns(2)
@@ -700,7 +915,8 @@ def show_failure_distribution(df_wheels):
 # ─────────────────────── RAIL REPLACEMENT ───────────────────────
 
 def show_rail_replacement(df_rail):
-    st.title("🛤️ Rail Replacement Log")
+    hero("Rail Replacement Log",
+         "Complete record of rail piece replacements and Thermit welding jobs")
     df = df_rail.copy()
 
     total_pieces = int(df["Qty_Pieces"].sum()) if "Qty_Pieces" in df.columns else 0
@@ -739,7 +955,8 @@ def show_rail_replacement(df_rail):
 # ─────────────────────── PREDICTIONS ───────────────────────
 
 def show_predictions(df_wheels, df_hardness):
-    st.title("🔮 Failure Predictions")
+    hero("Failure Predictions",
+         "Forecasted wheel failures using linear &amp; polynomial models, adjusted for rail hardness risk")
     df = df_wheels.dropna(subset=["Date"]).copy()
 
     months_ahead = st.slider("Months to predict ahead", min_value=3, max_value=24, value=12, step=1)
@@ -824,7 +1041,8 @@ def show_predictions(df_wheels, df_hardness):
 # ─────────────────────── UPLOAD DATA ───────────────────────
 
 def show_upload():
-    st.title("📤 Upload Maintenance Data")
+    hero("Upload Maintenance Data",
+         "Import your Excel workbook to refresh every dashboard and prediction instantly")
     st.info(
         "Upload an Excel file with 3 sheets: "
         "**LT wheel replacement data**, **Rail Hardness data**, **Rail Replacement data**."
@@ -901,7 +1119,8 @@ def show_upload():
 # ─────────────────────── VERSION HISTORY ───────────────────────
 
 def show_versions():
-    st.title("🕐 Version History")
+    hero("Version History",
+         "Every uploaded file is saved &mdash; activate or download any previous version")
     conn = get_db_connection()
     if st.session_state.role == "admin":
         versions = conn.execute(
@@ -956,7 +1175,8 @@ def show_versions():
 # ─────────────────────── USER MANAGEMENT ───────────────────────
 
 def show_user_management():
-    st.title("👥 User Management")
+    hero("User Management",
+         "Add or remove dashboard users and control access levels")
     if st.session_state.role != "admin":
         st.error("Admin access required.")
         return
@@ -1021,6 +1241,7 @@ def show_user_management():
 
 def main():
     init_db()
+    inject_css()
 
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
@@ -1035,7 +1256,22 @@ def main():
     # Sidebar
     with st.sidebar:
         st.markdown("### 🏗️ YZ Bay Analytics")
-        st.markdown(f"👤 **{st.session_state.username}** `{st.session_state.role}`")
+        st.markdown(
+            f"""
+            <div style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);
+                        border-radius:12px;padding:12px 14px;margin-bottom:10px;">
+                <div style="font-size:12px;color:#94a3b8;text-transform:uppercase;
+                            letter-spacing:0.6px;font-weight:700;">Signed in as</div>
+                <div style="font-size:16px;color:#fff;font-weight:700;margin-top:2px;">
+                    {st.session_state.username}</div>
+                <div style="display:inline-block;margin-top:6px;background:#2563eb;
+                            border-radius:50px;padding:2px 12px;font-size:11px;
+                            font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:#fff;">
+                    {st.session_state.role}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         st.divider()
 
         pages = [
