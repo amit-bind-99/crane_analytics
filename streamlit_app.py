@@ -437,7 +437,11 @@ def generate_mock_rail_replacement_data():
 def extract_rail_qty(job_description):
     if pd.isna(job_description):
         return 0
-    match = re.search(r"(\d+)\s*no\.?", str(job_description), re.IGNORECASE)
+    text = str(job_description)
+    # Count only actual rail PIECE replacements; exclude thermit welding rail joints
+    if re.search(r"thermit|welding|joint", text, re.IGNORECASE):
+        return 0
+    match = re.search(r"(\d+)\s*no\.?", text, re.IGNORECASE)
     return int(match.group(1)) if match else 0
 
 
