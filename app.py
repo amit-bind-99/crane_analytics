@@ -313,10 +313,16 @@ def get_version_storage_path(version_id):
 # ============== RAIL REPLACEMENT PARSERS ==============
 
 def extract_rail_qty(job_description):
-    """Extract quantity like '6 nos.' from job description."""
+    """Extract quantity like '6 nos.' from job description.
+
+    Counts only actual rail PIECE replacements; thermit welding rail
+    joints are excluded from the piece count (return 0).
+    """
     if pd.isna(job_description):
         return 0
     text = str(job_description)
+    if re.search(r'thermit|welding|joint', text, re.IGNORECASE):
+        return 0
     match = re.search(r'(\d+)\s*no\.?', text, re.IGNORECASE)
     if match:
         return int(match.group(1))
